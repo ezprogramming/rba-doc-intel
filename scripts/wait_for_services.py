@@ -11,7 +11,9 @@ import psycopg
 from minio import Minio
 
 
-POSTGRES_DSN = os.environ.get("DATABASE_URL")
+POSTGRES_DSN = os.environ.get("POSTGRES_DSN") or os.environ.get("DATABASE_URL")
+if POSTGRES_DSN and "+psycopg" in POSTGRES_DSN:
+    POSTGRES_DSN = POSTGRES_DSN.replace("+psycopg", "")
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "minio:9000")
 MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
 MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
