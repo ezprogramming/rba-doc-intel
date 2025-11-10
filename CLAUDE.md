@@ -55,6 +55,7 @@ AI tools must use exactly these:
   - No `conda`, no `poetry`, no `pipenv`.
 - **Storage**: MinIO (S3-compatible object storage)
   - Accessed via standard S3 Python client (e.g. `boto3` or equivalent).
+- **Embeddings runtime**: HTTP service (containerized FastAPI or Hugging Face text-embeddings-inference) hosting open-source embedding models such as `nomic-ai/nomic-embed-text-v1.5`. Must expose a POST `/embeddings` API compatible with `app/embeddings/client.py`.
 - **Database**: PostgreSQL
   - With **pgvector** extension for embeddings.
 - **UI**: Streamlit
@@ -80,6 +81,7 @@ AI tools must use exactly these:
 1. **Crawler & Ingestion (scripts)**
    - Scripts to crawl RBA websites, discover PDF URLs, download them into MinIO, and register them in Postgres.
    - Each document row must capture `source_url`, byte length, and a deterministic `content_hash` (e.g., SHA-256) so rerunning the crawler simply skips already ingested PDFs. Never fabricate PDFs from HTML—always download the original binary.
+   - Support optional environment filters (e.g., `CRAWLER_YEAR_FILTER`) so engineers can limit ingestion to specific publication years while debugging without modifying code.
 
 2. **PDF Processing Pipeline (batch / worker-style)**
    - A Python module that:
@@ -92,8 +94,8 @@ AI tools must use exactly these:
 3. **Embedding & Indexing Pipeline**
    - A Python module that:
      - Detects text chunks without embeddings.
-     - Calls an embedding model (configurable; can be local or remote).
-     - Stores embeddings in a `pgvector` column.
+     - Calls an embedding model (configurable; can be local or remote) through the embedding service container/API.
+     - Stores embeddings in a `pgvector` column (current dimension: 768 to match `nomic-ai/nomic-embed-text-v1.5`).
 
 4. **RAG Query Engine**
    - Library code (not a separate service) that:
@@ -180,9 +182,13 @@ Use a central `app/config.py` to load configuration via environment variables, e
 - `MINIO_BUCKET_RAW_PDF` (e.g. `rba-raw-pdf`)
 - `MINIO_BUCKET_DERIVED` (e.g. `rba-derived`)
 - `EMBEDDING_MODEL_NAME`
+- `EMBEDDING_API_BASE_URL`
+- `EMBEDDING_BATCH_SIZE`
+- `EMBEDDING_API_TIMEOUT`
 - `LLM_MODEL_NAME`
 - `LLM_API_BASE_URL`
 - `LLM_API_KEY` (if needed, or path to local Ollama)
+- `CRAWLER_YEAR_FILTER` (optional, comma-separated years to ingest)
 
 **Do not** hard-code credentials or local paths in code.
 
@@ -191,12 +197,14 @@ Use a central `app/config.py` to load configuration via environment variables, e
 - Dependencies are defined in `pyproject.toml`.
 - Basic commands:
   - `uv sync` – install dependencies.
-- `uv run scripts/crawler_rba.py`
-- `uv run scripts/process_pdfs.py`
-- `uv run scripts/build_embeddings.py`
-- `uv run streamlit run app/ui/streamlit_app.py`
-- `uv run python scripts/bootstrap_db.py` (idempotent schema/bootstrap helper invoked automatically by docker compose startup)
-- `uv run pytest -q` before every commit/PR; add targeted unit tests beside new helpers.
+  - `uv run scripts/crawler_rba.py`
+  - `uv run scripts/process_pdfs.py`
+  - `uv run scripts/build_embeddings.py`
+  - `uv run python scripts/refresh_pdfs.py` (optional convenience wrapper)
+  - `uv run streamlit run app/ui/streamlit_app.py`
+  - `uv run python scripts/bootstrap_db.py` (idempotent schema/bootstrap helper invoked automatically by docker compose startup)
+  - `uv run pytest -q` before every commit/PR; add targeted unit tests beside new helpers.
+  - `docker compose up -d embedding` to ensure the embedding API is online before running backfills.
 
 **Do not** introduce other environment managers or direct `pip install` instructions.
 
