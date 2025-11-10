@@ -19,6 +19,8 @@ class Settings:
     minio_raw_bucket: str
     minio_derived_bucket: str
     embedding_model_name: str
+    embedding_api_base_url: str
+    embedding_api_timeout: int
     llm_model_name: str
     llm_api_base_url: str
     llm_api_key: str | None = None
@@ -47,6 +49,9 @@ def get_settings() -> Settings:
         minio_raw_bucket=os.environ.get("MINIO_BUCKET_RAW_PDF", "rba-raw-pdf"),
         minio_derived_bucket=os.environ.get("MINIO_BUCKET_DERIVED", "rba-derived"),
         embedding_model_name=os.environ.get("EMBEDDING_MODEL_NAME", "text-embedding-default"),
+        embedding_api_base_url=os.environ.get("EMBEDDING_API_BASE_URL")
+        or os.environ.get("LLM_API_BASE_URL", "http://localhost:8000"),
+        embedding_api_timeout=int(os.environ.get("EMBEDDING_API_TIMEOUT", "120")),
         llm_model_name=os.environ.get("LLM_MODEL_NAME", "command-rag"),
         llm_api_base_url=os.environ.get("LLM_API_BASE_URL", "http://localhost:8000"),  # placeholder
         llm_api_key=os.environ.get("LLM_API_KEY"),

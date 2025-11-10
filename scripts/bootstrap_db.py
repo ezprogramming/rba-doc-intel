@@ -40,6 +40,21 @@ def main() -> None:
                 """
                 DO $$
                 BEGIN
+                    PERFORM 1
+                    FROM information_schema.columns
+                    WHERE table_name = 'chunks' AND column_name = 'embedding';
+                    IF FOUND THEN
+                        ALTER TABLE chunks ALTER COLUMN embedding TYPE vector(768);
+                    END IF;
+                END$$;
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                DO $$
+                BEGIN
                     IF EXISTS (
                         SELECT 1 FROM information_schema.columns
                         WHERE table_name = 'chat_sessions' AND column_name = 'metadata'

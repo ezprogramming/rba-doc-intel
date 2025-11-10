@@ -78,7 +78,7 @@ class Chunk(Base):
     page_end = Column(Integer, nullable=True)
     chunk_index = Column(Integer, nullable=False)
     text = Column(Text, nullable=False)
-    embedding = Column(Vector(1536), nullable=True)
+    embedding = Column(Vector(768), nullable=True)
     section_hint = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     updated_at = Column(

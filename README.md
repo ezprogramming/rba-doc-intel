@@ -43,6 +43,8 @@ docker compose run --rm app uv run scripts/build_embeddings.py
 docker compose run --rm app uv run python scripts/refresh_pdfs.py
 ```
 
+Set `CRAWLER_YEAR_FILTER` in `.env` (for example, `CRAWLER_YEAR_FILTER=2024`) to limit ingestion to specific years while debugging. The crawler remains idempotent, so you can widen or clear the filter later and rerun the same commands to backfill the rest of the corpus.
+
 `scripts/debug_dump.py` prints current document/page/chunk counts for quick sanity checks.
 
 ## Testing & Linting

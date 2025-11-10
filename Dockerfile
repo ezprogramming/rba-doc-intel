@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -Ls https://astral.sh/uv/install.sh | sh
+RUN ln -sf /root/.local/bin/uv /usr/local/bin/uv \
+    && ln -sf /root/.local/bin/uvx /usr/local/bin/uvx
 
 WORKDIR /app
 

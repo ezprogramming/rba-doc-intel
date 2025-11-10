@@ -24,6 +24,11 @@ from app.storage import MinioStorage
 BASE_URL = "https://www.rba.gov.au"
 LOGGER = logging.getLogger(__name__)
 USER_AGENT = os.environ.get("CRAWLER_USER_AGENT", "rba-doc-intel/0.1 (+https://github.com/ezprogramming)")
+YEAR_FILTERS = {
+    year.strip()
+    for year in os.getenv("CRAWLER_YEAR_FILTER", "").split(",")
+    if year.strip()
+}
 
 
 @dataclass(frozen=True)
@@ -205,6 +210,30 @@ def ingest_source(source: PublicationSource, storage: MinioStorage) -> int:
     issue_urls = _extract_issue_links(index_resp.text, source.issue_pattern)
     if not issue_urls:
         issue_urls = [source.index_url]
+        filtered_notice = False
+    else:
+        filtered_notice = True
+    if YEAR_FILTERS and filtered_notice:
+        before = len(issue_urls)
+        issue_urls = [
+            url
+            for url in issue_urls
+            if any(f"/{year}/" in url for year in YEAR_FILTERS)
+        ]
+        LOGGER.info(
+            "Applying year filter %s: %d -> %d issue pages",
+            sorted(YEAR_FILTERS),
+            before,
+            len(issue_urls),
+        )
+        if not issue_urls:
+            LOGGER.warning(
+                "Year filter %s removed all issue pages for %s; skipping source",
+                sorted(YEAR_FILTERS),
+                source.doc_type,
+            )
+            return 0
+
     LOGGER.info("Found %d issue pages for %s", len(issue_urls), source.doc_type)
 
     ingested = 0

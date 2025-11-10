@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Iterable, List
 
 from sqlalchemy import select, func
@@ -11,8 +12,10 @@ from app.db.session import session_scope
 from app.embeddings.client import EmbeddingClient
 
 
-def generate_missing_embeddings(batch_size: int = 32) -> int:
+def generate_missing_embeddings(batch_size: int | None = None) -> int:
     """Populate embeddings for chunks where the vector is null."""
+    if batch_size is None:
+        batch_size = int(os.environ.get("EMBEDDING_BATCH_SIZE", "32"))
     client = EmbeddingClient()
     updated = 0
 
