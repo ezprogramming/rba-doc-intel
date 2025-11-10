@@ -1,4 +1,4 @@
-\"\"\"Database session helpers.\"\"\"
+"""Database session helpers."""
 
 from __future__ import annotations
 
@@ -45,4 +45,3 @@ def session_scope():
         raise
     finally:
         session.close()
-

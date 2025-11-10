@@ -35,6 +35,16 @@ def _format_context(chunks: List[RetrievedChunk]) -> str:
     return "\n\n".join(formatted)
 
 
+def _compose_analysis(chunks: List[RetrievedChunk]) -> str:
+    if not chunks:
+        return "No supporting excerpts retrieved; unable to ground an answer."
+    summaries = []
+    for chunk in chunks:
+        page_range = f"pages {chunk.page_start}-{chunk.page_end}" if chunk.page_start is not None else "unspecified pages"
+        summaries.append(f"{chunk.title} ({chunk.doc_type}, {page_range})")
+    return "Answer grounded in " + "; ".join(summaries)
+
+
 def answer_query(query: str, session_id: UUID | None = None, top_k: int = 5) -> AnswerResponse:
     embedding_client = EmbeddingClient()
     llm_client = LLMClient()
@@ -75,4 +85,6 @@ def answer_query(query: str, session_id: UUID | None = None, top_k: int = 5) -> 
     with session_scope() as session:
         session.add(ChatMessage(session_id=session_id_value, role="assistant", content=answer_text))
 
-    return AnswerResponse(answer=answer_text, evidence=evidence_payload)
+    analysis = _compose_analysis(chunks)
+
+    return AnswerResponse(answer=answer_text, evidence=evidence_payload, analysis=analysis)

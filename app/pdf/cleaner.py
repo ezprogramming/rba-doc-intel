@@ -1,4 +1,4 @@
-"\"\"\"Text cleaning utilities.\"\"\""
+"""Text cleaning utilities."""
 
 from __future__ import annotations
 
@@ -16,4 +16,3 @@ def clean_text(text: str) -> str:
             continue
         lines.append(stripped)
     return " ".join(lines)
-

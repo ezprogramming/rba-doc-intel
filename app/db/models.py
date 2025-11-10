@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum as PyEnum
 from uuid import uuid4, UUID
 
-from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID as PG_UUID
 from sqlalchemy.orm import declarative_base, relationship
 
@@ -30,13 +30,19 @@ class DocumentStatus(str, PyEnum):
 
 class Document(Base):
     __tablename__ = "documents"
+    __table_args__ = (
+        UniqueConstraint("content_hash", name="uq_documents_content_hash"),
+    )
 
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=default_uuid)
     source_system = Column(String, nullable=False)
+    source_url = Column(String, nullable=True)
     s3_key = Column(String, nullable=False)
     doc_type = Column(String, nullable=False)
     title = Column(String, nullable=False)
     publication_date = Column(Date, nullable=True)
+    content_hash = Column(String(128), nullable=True)
+    content_length = Column(Integer, nullable=True)
     status = Column(String, default=DocumentStatus.NEW.value, nullable=False)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     updated_at = Column(
@@ -90,7 +96,7 @@ class ChatSession(Base):
 
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=default_uuid)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
-    metadata = Column(JSON, nullable=True)
+    metadata_json = Column(JSON, nullable=True)
 
 
 class ChatMessage(Base):
@@ -101,4 +107,4 @@ class ChatMessage(Base):
     role = Column(String, nullable=False)
     content = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
-    metadata = Column(JSON, nullable=True)
+    metadata_json = Column(JSON, nullable=True)

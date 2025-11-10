@@ -1,12 +1,12 @@
-"\"\"\"Embedding backfill pipeline.\"\"\""
+"""Embedding backfill pipeline."""
 
 from __future__ import annotations
 
 from typing import Iterable, List
 
-from sqlalchemy import select
+from sqlalchemy import select, func
 
-from app.db.models import Chunk
+from app.db.models import Chunk, Document, DocumentStatus
 from app.db.session import session_scope
 from app.embeddings.client import EmbeddingClient
 
@@ -29,9 +29,21 @@ def generate_missing_embeddings(batch_size: int = 32) -> int:
 
         texts = [chunk.text for chunk in chunks]
         response = client.embed(texts)
+        updated_doc_ids: set[str] = set()
         for chunk, vector in zip(chunks, response.vectors):
             chunk.embedding = vector
             updated += 1
+            updated_doc_ids.add(str(chunk.document_id))
+
+        for doc_id in updated_doc_ids:
+            remaining = session.scalar(
+                select(func.count())
+                .select_from(Chunk)
+                .where(Chunk.document_id == doc_id, Chunk.embedding.is_(None))
+            )
+            if remaining == 0:
+                document = session.get(Document, doc_id)
+                if document:
+                    document.status = DocumentStatus.EMBEDDED.value
 
     return updated
-

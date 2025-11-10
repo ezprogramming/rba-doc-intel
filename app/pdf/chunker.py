@@ -1,4 +1,4 @@
-"\"\"\"Chunking logic for cleaned text.\"\"\""
+"""Chunking logic for cleaned text."""
 
 from __future__ import annotations
 
@@ -52,4 +52,3 @@ def chunk_pages(clean_pages: List[str], max_tokens: int = 500) -> List[Chunk]:
         )
 
     return chunks
-

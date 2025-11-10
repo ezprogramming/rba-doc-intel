@@ -14,7 +14,7 @@ __pycache__/
 .vscode/
 
 # Local data
-storage/
+/storage/
 *.db
 
 # uv cache

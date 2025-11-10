@@ -1,4 +1,4 @@
-"\"\"\"PDF parsing utilities.\"\"\""
+"""PDF parsing utilities."""
 
 from __future__ import annotations
 
@@ -15,4 +15,3 @@ def extract_pages(pdf_path: Path) -> List[str]:
         for page in doc:
             pages.append(page.get_text())
     return pages
-

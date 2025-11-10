@@ -25,6 +25,12 @@ Local-first setup for crawling, processing, and querying Reserve Bank of Austral
 
 Streamlit will be reachable on `http://localhost:${STREAMLIT_SERVER_PORT:-8501}`.
 
+If you prefer to ensure the schema manually outside of `docker compose up`, run:
+
+```bash
+docker compose run --rm app uv run python scripts/bootstrap_db.py
+```
+
 ## Running Pipelines
 
 Use the same container for operational scripts so dependencies stay consistent:
