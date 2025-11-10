@@ -39,6 +39,8 @@ Use the same container for operational scripts so dependencies stay consistent:
 docker compose run --rm app uv run scripts/crawler_rba.py
 docker compose run --rm app uv run scripts/process_pdfs.py
 docker compose run --rm app uv run scripts/build_embeddings.py
+# Or run them all sequentially:
+docker compose run --rm app uv run python scripts/refresh_pdfs.py
 ```
 
 `scripts/debug_dump.py` prints current document/page/chunk counts for quick sanity checks.

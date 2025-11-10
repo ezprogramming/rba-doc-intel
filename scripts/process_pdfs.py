@@ -95,13 +95,19 @@ def main(batch_size: int = 10) -> None:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     storage = MinioStorage()
-    document_ids = _fetch_pending_document_ids(batch_size)
-    if not document_ids:
+    total_processed = 0
+    while True:
+        document_ids = _fetch_pending_document_ids(batch_size)
+        if not document_ids:
+            break
+        for document_id in document_ids:
+            process_document(document_id, storage)
+        total_processed += len(document_ids)
+        LOGGER.info("Processed %d documents in this batch (total=%d).", len(document_ids), total_processed)
+    if total_processed == 0:
         LOGGER.info("No NEW documents to process.")
-        return
-    for document_id in document_ids:
-        process_document(document_id, storage)
-    LOGGER.info("Processed %d documents.", len(document_ids))
+    else:
+        LOGGER.info("Processing complete. Total documents processed: %d.", total_processed)
 
 
 if __name__ == "__main__":

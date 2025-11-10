@@ -12,6 +12,8 @@ def main() -> None:
     engine = get_engine()
     with engine.begin() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+    Base.metadata.create_all(bind=engine)
+    with engine.begin() as conn:
         conn.execute(
             text(
                 "ALTER TABLE documents ADD COLUMN IF NOT EXISTS source_url TEXT"
@@ -54,7 +56,6 @@ def main() -> None:
                 """
             )
         )
-    Base.metadata.create_all(bind=engine)
     print("Database schema ensured.")
 
 
