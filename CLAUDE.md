@@ -79,6 +79,7 @@ AI tools must use exactly these:
 
 1. **Crawler & Ingestion (scripts)**
    - Scripts to crawl RBA websites, discover PDF URLs, download them into MinIO, and register them in Postgres.
+   - Each document row must capture `source_url`, byte length, and a deterministic `content_hash` (e.g., SHA-256) so rerunning the crawler simply skips already ingested PDFs. Never fabricate PDFs from HTML—always download the original binary.
 
 2. **PDF Processing Pipeline (batch / worker-style)**
    - A Python module that:
@@ -102,7 +103,7 @@ AI tools must use exactly these:
        - Optionally filters by doc_type, date range, etc.
        - Assembles a RAG prompt (context + question).
        - Calls the LLM to generate an answer.
-     - Returns structured answer object: `answer`, `evidence`, `analysis`.
+     - Returns structured answer object: `answer`, `evidence`, `analysis`. The `analysis` field must summarize which documents/pages grounded the response so downstream UIs can show reasoning breadcrumbs.
 
 5. **Streamlit UI**
    - A simple chat-like frontend that:
@@ -190,10 +191,12 @@ Use a central `app/config.py` to load configuration via environment variables, e
 - Dependencies are defined in `pyproject.toml`.
 - Basic commands:
   - `uv sync` – install dependencies.
-  - `uv run scripts/crawler_rba.py`
-  - `uv run scripts/process_pdfs.py`
-  - `uv run scripts/build_embeddings.py`
-  - `uv run streamlit run app/ui/streamlit_app.py`
+- `uv run scripts/crawler_rba.py`
+- `uv run scripts/process_pdfs.py`
+- `uv run scripts/build_embeddings.py`
+- `uv run streamlit run app/ui/streamlit_app.py`
+- `uv run python scripts/bootstrap_db.py` (idempotent schema/bootstrap helper invoked automatically by docker compose startup)
+- `uv run pytest -q` before every commit/PR; add targeted unit tests beside new helpers.
 
 **Do not** introduce other environment managers or direct `pip install` instructions.
 
