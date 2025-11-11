@@ -108,3 +108,210 @@ class ChatMessage(Base):
     content = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     metadata_json = Column(JSON, nullable=True)
+
+
+# ============================================================================
+# TABLE EXTRACTION MODELS
+# ============================================================================
+# Store structured tables extracted from RBA PDFs for better numerical queries
+
+
+class Table(Base):
+    """Structured table extracted from PDF page.
+
+    Why separate table storage?
+    - Preserves row/column structure lost in plain text
+    - Enables structured queries: "GDP forecast for 2025?"
+    - Better grounding for numerical questions
+    - Can join with chunks to enrich context
+
+    Example data structure:
+    structured_data = [
+        {"Year": "2024", "GDP": "2.1%", "Inflation": "3.5%"},
+        {"Year": "2025", "GDP": "2.5%", "Inflation": "2.8%"}
+    ]
+    """
+    __tablename__ = "tables"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Link to source document and page
+    document_id = Column(PG_UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    page_number = Column(Integer, nullable=False)
+
+    # Table data (list of row dicts from pandas DataFrame.to_dict('records'))
+    structured_data = Column(JSON, nullable=False)
+
+    # Bounding box coordinates [x1, y1, x2, y2] on page
+    # Useful for visual highlighting or re-extraction
+    bbox = Column(JSON, nullable=True)
+
+    # Camelot accuracy score (0-100)
+    # Higher = more confident detection
+    # Typical good tables: 80-100
+    accuracy = Column(Integer, nullable=True)
+
+    # Optional caption/title extracted from text near table
+    caption = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+
+# ============================================================================
+# EVALUATION & ML ENGINEERING MODELS
+# ============================================================================
+# Track evaluation experiments, results, and user feedback
+
+
+class EvalExample(Base):
+    """Golden evaluation examples for offline RAG testing.
+
+    Why golden examples?
+    - Consistent benchmark across model changes
+    - Catch regressions before deployment
+    - Measure improvement from fine-tuning
+    - Industry standard practice (see: BEIR, MTEB)
+
+    Example:
+    query = "What is the RBA's inflation target?"
+    expected_keywords = ["2-3", "percent", "medium term"]
+    difficulty = "easy"
+    """
+    __tablename__ = "eval_examples"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # The question to test
+    query = Column(Text, nullable=False)
+
+    # Optional reference answer (for ROUGE/semantic similarity metrics)
+    gold_answer = Column(Text, nullable=True)
+
+    # Keywords that MUST appear in answer (simpler than full answer matching)
+    # Example: ["2-3", "percent", "target"] for inflation target question
+    expected_keywords = Column(JSON, nullable=True)
+
+    # For reporting: easy/medium/hard or domain categories
+    difficulty = Column(String, nullable=True)
+    category = Column(String, nullable=True)  # inflation/employment/forecasts/etc
+
+    # Flexible extension for future fields
+    metadata = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+
+class EvalRun(Base):
+    """Tracks a single evaluation experiment run.
+
+    Why track runs?
+    - Compare model versions (qwen1.5b vs qwen7b)
+    - Compare prompt versions (v1.0 vs v1.1)
+    - Compare retrieval configs (top_k=5 vs top_k=10)
+    - A/B testing for production deployment
+
+    Example:
+    config = {
+        "model_name": "qwen2.5:7b",
+        "prompt_version": "v1.2",
+        "retrieval_top_k": 5,
+        "reranking_enabled": True
+    }
+    """
+    __tablename__ = "eval_runs"
+
+    id = Column(PG_UUID(as_uuid=True), primary_key=True, default=default_uuid)
+
+    # When was this run executed?
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+    # What configuration was tested?
+    # Stores model name, prompt version, retrieval params, etc.
+    config = Column(JSON, nullable=False)
+
+    # Status: running/completed/failed
+    status = Column(String, default="running", nullable=False)
+
+    # Summary metrics after all examples processed
+    # Example: {"total": 50, "passed": 42, "pass_rate": 0.84, "avg_latency_ms": 850}
+    summary_metrics = Column(JSON, nullable=True)
+
+
+class EvalResult(Base):
+    """Individual evaluation result for one example in one run.
+
+    Why per-example results?
+    - Debug failures: "Why did question X fail?"
+    - Error analysis: "What types of questions fail most?"
+    - Fine-tuning data: Use failed examples for improvement
+    """
+    __tablename__ = "eval_results"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Which run does this result belong to?
+    eval_run_id = Column(PG_UUID(as_uuid=True), ForeignKey("eval_runs.id", ondelete="CASCADE"), nullable=False)
+
+    # Which example was tested?
+    eval_example_id = Column(Integer, ForeignKey("eval_examples.id"), nullable=False)
+
+    # What did the LLM generate?
+    llm_answer = Column(Text, nullable=True)
+
+    # Which chunks were retrieved? (for grounding analysis)
+    retrieved_chunks = Column(JSON, nullable=True)
+
+    # How long did it take?
+    latency_ms = Column(Integer, nullable=True)
+
+    # Metrics for this specific result
+    # Example: {"keyword_match": 0.8, "semantic_similarity": 0.75, "grounding_score": 0.9}
+    scores = Column(JSON, nullable=True)
+
+    # Overall pass/fail (based on thresholds)
+    passed = Column(Integer, nullable=True)  # 1=pass, 0=fail, NULL=error
+
+    # Error message if generation failed
+    error = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+
+class Feedback(Base):
+    """User feedback on chat responses (thumbs up/down).
+
+    Why collect feedback?
+    - Identify bad responses for improvement
+    - Create preference pairs for DPO/RLHF fine-tuning
+    - Track quality trends over time
+    - Prioritize which failures to fix first
+
+    Workflow:
+    1. User asks question → LLM generates answer
+    2. User clicks thumbs up/down in Streamlit UI
+    3. Feedback stored with chat_message_id link
+    4. Periodically: analyze feedback, create fine-tuning dataset
+    5. Fine-tune model on positive examples (SFT) or preference pairs (DPO)
+    """
+    __tablename__ = "feedback"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Which message is this feedback for?
+    chat_message_id = Column(Integer, ForeignKey("chat_messages.id"), nullable=False)
+
+    # Thumbs up (+1), thumbs down (-1), neutral (0)
+    score = Column(Integer, nullable=False)
+
+    # Optional: user comment explaining what went wrong
+    comment = Column(Text, nullable=True)
+
+    # Optional: what should the answer have been?
+    # Useful for creating supervised fine-tuning examples
+    corrected_answer = Column(Text, nullable=True)
+
+    # Tags for categorizing feedback
+    # Example: ["incorrect", "incomplete", "hallucination"]
+    tags = Column(JSON, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
