@@ -75,7 +75,7 @@ def chunk_pages(
 def answer_query(
     query: str,
     session_id: UUID | None = None,
-    top_k: int = 2,
+    top_k: int = 6,
     stream_handler: TokenHandler | None = None,
 ) -> AnswerResponse:
     ...
@@ -86,8 +86,9 @@ def answer_query(
 ```
 
 **Impact:**
-- Hybrid semantic + lexical retrieval (pgvector + BM25) boosts recall on identifiers/figures
+- Hybrid semantic + lexical retrieval (pgvector + BM25) + year-aware filtering keeps results recent when the query specifies a year
 - Streaming responses keep Streamlit responsive even on CPU-bound Ollama
+- Default `top_k=6` plus optional reranking (checkbox on by default in the UI) lets analysts see multiple corroborating excerpts without overrunning context limits
 - Investment-focused analysis with quantitative focus
 
 ---
@@ -127,7 +128,7 @@ Created `docs/COMPLETE_PDF_RAG_INTERVIEW_GUIDE.md` - comprehensive 60+ page reso
 | Total chunks | 2,303 | 526 | **-77% redundancy** |
 | Chunk size | 500 tokens | 768 tokens | **+54%** |
 | Overlap | 75% | 15% | **-80%** |
-| Retrieval slots | 5 | 2 (higher-quality fused results) | **Lower tokens / higher precision** |
+| Retrieval slots | 5 | 6 (higher-quality fused results) | **Broader context without breaking token limits** |
 
 ### Storage & Latency
 - Database: ~77% fewer rows than the baseline, so vacuum/index maintenance stays quick.
@@ -139,7 +140,7 @@ Created `docs/COMPLETE_PDF_RAG_INTERVIEW_GUIDE.md` - comprehensive 60+ page reso
 |-------------|-----------|
 | 768-token context + section hints | Balanced precision/latency while keeping chapter titles visible in the UI |
 | Hybrid (vector + BM25) retrieval | Pulls exact references (e.g., “TS-999” errors) alongside semantically similar passages |
-| Streaming prompt + focused top_k=2 | Keeps Ollama under the 4 k-token limit and shows analysts answers immediately |
+| Streaming prompt + focused top_k=6 with reranking | Keeps Ollama under the 4 k-token limit while covering multiple sections; reranking stays on by default in the UI |
 | Analyst-tuned system prompt | Forces citations + quantitative framing for every response |
 
 ---

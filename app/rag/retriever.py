@@ -21,7 +21,10 @@ When to skip reranking?
 
 from __future__ import annotations
 
+import datetime as dt
 import logging
+import math
+import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 
@@ -52,6 +55,33 @@ class RetrievedChunk:
 # lexical boosts so identifiers/dates aren't lost.
 SEMANTIC_WEIGHT = 0.7
 LEXICAL_WEIGHT = 0.3
+# Recency weighting encourages newer publications when the user specifies a year.
+RECENCY_WEIGHT = 0.25
+RECENCY_HALF_LIFE_YEARS = 1.5  # sharper decay to favour most recent content
+
+YEAR_PATTERN = re.compile(r"(?:19|20)\\d{2}")
+
+
+def _extract_target_year(query_text: str) -> int | None:
+    """Return the most recent year mentioned in the query, if any."""
+    if not query_text:
+        return None
+    years = [int(match) for match in YEAR_PATTERN.findall(query_text)]
+    return max(years) if years else None
+
+
+def _compute_recency_score(
+    publication_date: Optional[dt.date],
+    reference_year: Optional[int],
+) -> float:
+    """Compute exponential decay score favouring documents near the reference year."""
+    if publication_date is None:
+        return 0.0
+    if reference_year is None:
+        reference_year = dt.date.today().year
+    delta = max(0, reference_year - publication_date.year)
+    # Higher score when delta is small; approaches 0 as documents get older.
+    return math.exp(-delta / RECENCY_HALF_LIFE_YEARS)
 
 
 def retrieve_similar_chunks(
@@ -63,6 +93,7 @@ def retrieve_similar_chunks(
     lexical_weight: float = LEXICAL_WEIGHT,
     rerank: bool = False,
     rerank_multiplier: int = 10,
+    recency_bias: bool = True,
 ) -> List[RetrievedChunk]:
     """Return the top-k chunks using hybrid semantic + lexical retrieval.
 
@@ -77,6 +108,8 @@ def retrieve_similar_chunks(
         rerank_multiplier: How many candidates to retrieve before reranking (default: 10)
                           → Retrieve limit * rerank_multiplier, rerank to limit
                           → Example: limit=5, multiplier=10 → retrieve 50, rerank to 5
+        recency_bias: When True, boost and optionally filter results using publication dates
+                      if the query references a specific year.
 
     Returns:
         List of RetrievedChunk objects, sorted by score (descending)
@@ -121,6 +154,7 @@ def retrieve_similar_chunks(
     )
 
     combined: Dict[int, dict] = {}
+    target_year = _extract_target_year(query_text)
 
     # Step 1: Semantic search (bi-encoder vector similarity)
     # Why cosine distance? Embeddings are L2-normalized, so cosine = dot product
@@ -220,8 +254,26 @@ def retrieve_similar_chunks(
     semantic_max = max((item["semantic"] for item in combined.values()), default=0.0)
     lexical_max = max((item["lexical"] for item in combined.values()), default=0.0)
 
+    items: List[dict] = list(combined.values())
+
+    # Optional recency filter when the query explicitly references a year.
+    if recency_bias and target_year:
+        allowed_years = {target_year, target_year - 1}
+        filtered = [
+            item for item in items
+            if item["publication_date"]
+            and item["publication_date"].year in allowed_years
+        ]
+
+        if filtered:
+            logger.debug(
+                "Recency bias active: restricting candidates to publications in %s",
+                sorted(allowed_years, reverse=True),
+            )
+            items = filtered
+
     results: List[RetrievedChunk] = []
-    for item in combined.values():
+    for item in items:
         semantic_score = item["semantic"] / semantic_max if semantic_max > 0 else 0.0
         lexical_score = item["lexical"] / lexical_max if lexical_max > 0 else 0.0
         final_score = 0.0
@@ -229,6 +281,9 @@ def retrieve_similar_chunks(
             final_score += semantic_weight * semantic_score
         if lexical_weight > 0:
             final_score += lexical_weight * lexical_score
+        if recency_bias:
+            recency_score = _compute_recency_score(item["publication_date"], target_year)
+            final_score += RECENCY_WEIGHT * recency_score
 
         results.append(
             RetrievedChunk(

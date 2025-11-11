@@ -24,11 +24,36 @@ from app.storage import MinioStorage
 BASE_URL = "https://www.rba.gov.au"
 LOGGER = logging.getLogger(__name__)
 USER_AGENT = os.environ.get("CRAWLER_USER_AGENT", "rba-doc-intel/0.1 (+https://github.com/ezprogramming)")
-YEAR_FILTERS = {
-    year.strip()
-    for year in os.getenv("CRAWLER_YEAR_FILTER", "").split(",")
-    if year.strip()
-}
+def _parse_year_filters(raw_filters: str) -> set[str]:
+    filters: set[str] = set()
+    current_year = date.today().year
+    for token in raw_filters.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if token.endswith("+") and token[:-1].isdigit():
+            start_year = int(token[:-1])
+            for year in range(start_year, current_year + 1):
+                filters.add(str(year))
+            continue
+        if "-" in token:
+            start_str, end_str = token.split("-", 1)
+            if start_str.isdigit():
+                start_year = int(start_str)
+                end_year = int(end_str) if end_str.isdigit() else current_year
+                if start_year > end_year:
+                    start_year, end_year = end_year, start_year
+                for year in range(start_year, end_year + 1):
+                    filters.add(str(year))
+                continue
+        if token.isdigit():
+            filters.add(token)
+        else:
+            LOGGER.warning("Ignoring invalid year filter token '%s'", token)
+    return filters
+
+
+YEAR_FILTERS = _parse_year_filters(os.getenv("CRAWLER_YEAR_FILTER", ""))
 
 
 @dataclass(frozen=True)

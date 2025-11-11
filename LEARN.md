@@ -3119,7 +3119,7 @@ def _compose_analysis(chunks: List[RetrievedChunk]) -> str:
 def answer_query(
     query: str,
     session_id: UUID | None = None,
-    top_k: int = 2,
+    top_k: int = 6,
     stream_handler: TokenHandler | None = None,
     use_reranking: bool = False,
     safety_enabled: bool = True,
@@ -3131,14 +3131,16 @@ def answer_query(
 
 - `query`: User question text
 - `session_id`: Optional chat session UUID for persistence (links messages together)
-- `top_k`: Number of chunks to retrieve (default 2 = ~1500 tokens of context)
+- `top_k`: Number of chunks to retrieve (default 6 ≈ 4–5k tokens of grounded context)
 - `stream_handler`: Callback for token streaming (e.g., update Streamlit UI)
 - `use_reranking`: Enable cross-encoder reranking (default False for speed)
 - `safety_enabled`: Enable PII/toxicity checks (default True for production)
 
+> **UI note:** the Streamlit chat sidebar turns reranking on by default, so end users typically query with `use_reranking=True` and can toggle it per session.
+
 **Why these defaults?**
 
-- `top_k=2`: Industry standard for RAG (Pinecone, Cohere recommend 1-5 chunks)
+- `top_k=6`: Gives the LLM multiple document sections (recent + historical) without blowing past Ollama's 4k-token comfort zone. Still inside the "1-8 chunks" range Pinecone/Cohere recommend.
 - `use_reranking=False`: Saves 200-500ms latency, hybrid search already good
 - `safety_enabled=True`: Safer default (explicit opt-out required for dev/debug)
 
@@ -3360,13 +3362,15 @@ return AnswerResponse(answer=answer_text, evidence=evidence_payload, analysis=an
 ```
 1. Query safety check → Block if unsafe
 2. Embed query → 768-dim vector
-3. Retrieve chunks → Hybrid search (top_k=2)
+3. Retrieve chunks → Hybrid search (top_k=6, with year-aware recency bias)
 4. Optional reranking → Cross-encoder (if enabled)
 5. Format context → Headers + text
 6. LLM generation → Stream or complete
 7. Answer safety check → Block if unsafe
 8. Persist messages → DB with session_id
 9. Return response → answer + evidence + analysis
+
+Year-aware recency: when the question contains a year (e.g., "What about housing in 2025?"), the retriever restricts candidates to that year (or year-1 if needed) before scoring, so the evidence skews toward the freshest statements of monetary policy.
 ```
 
 ---
@@ -4470,12 +4474,12 @@ def test_answer_query(test_db, test_documents, embedding_mock, llm_mock):
     llm_mock.return_value = "The RBA targets 2-3% inflation."
 
     # Query
-    response = answer_query("What is the inflation target?", top_k=2)
+    response = answer_query("What is the inflation target?", top_k=6)
 
     # Assert response structure
     assert isinstance(response, AnswerResponse)
     assert len(response.answer) > 0
-    assert len(response.evidence) <= 2
+    assert len(response.evidence) <= 6
     assert response.analysis is not None
 ```
 

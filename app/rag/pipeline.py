@@ -88,7 +88,7 @@ TokenHandler = Callable[[str], None]
 def answer_query(
     query: str,
     session_id: UUID | None = None,
-    top_k: int = 2,
+    top_k: int = 6,
     stream_handler: TokenHandler | None = None,
     use_reranking: bool = False,
     safety_enabled: bool = True,
@@ -98,7 +98,7 @@ def answer_query(
     Args:
         query: User question text
         session_id: Optional chat session ID for persistence
-        top_k: Number of chunks to retrieve for context (default: 2)
+        top_k: Number of chunks to retrieve for context (default: 6)
         stream_handler: Optional callback for streaming LLM responses
         use_reranking: Whether to use cross-encoder reranking (default: False)
                       When True:

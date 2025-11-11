@@ -1846,7 +1846,7 @@ Stub that can re-score candidates with a cross-encoder when needed. Disabled by 
 | 39–44 | `_format_context()` packages chunks as `[doc_type] Title (pages x-y)` + text. |
 | 57–104 | `answer_query()` orchestrates everything:
   1. Embed question (`EmbeddingClient`).
-  2. Retrieve chunks (`retrieve_similar_chunks`) with `top_k=2` to stay within LLM context limits.
+  2. Retrieve chunks (`retrieve_similar_chunks`) with `top_k=6` (the new default) so the LLM sees multiple recency-filtered excerpts when queries mention a year.
   3. Compose user message (`Question + Context`).
   4. Call LLM client; if `stream_handler` is provided, uses streaming path (see next section).
   5. Save user + assistant messages to Postgres so the UI can display history/feedback.

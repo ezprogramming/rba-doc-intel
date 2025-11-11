@@ -188,7 +188,7 @@ def render_history() -> None:
         st.divider()
 
 
-def handle_submit(question: str) -> None:
+def handle_submit(question: str, use_reranking: bool) -> None:
     """Handle user question submission.
 
     Workflow:
@@ -212,6 +212,7 @@ def handle_submit(question: str) -> None:
         "ui:question_submitted",
         question=question,
         session_id=st.session_state.chat_session_id,
+        rerank=use_reranking,
     )
 
     entry = {
@@ -234,6 +235,7 @@ def handle_submit(question: str) -> None:
             question,
             session_id=st.session_state.chat_session_id,
             stream_handler=on_token,
+            use_reranking=use_reranking,
         )
         entry["answer"] = response.answer
         entry["evidence"] = response.evidence
@@ -241,6 +243,7 @@ def handle_submit(question: str) -> None:
             "ui:answer_rendered",
             session_id=st.session_state.chat_session_id,
             evidence_count=len(response.evidence),
+            rerank=use_reranking,
         )
 
         # Retrieve message_id from database for feedback linkage
@@ -273,11 +276,12 @@ def handle_submit(question: str) -> None:
 
 def main() -> None:
     init_session()
+    use_reranking = st.sidebar.checkbox("Enable reranking", value=True)
     with st.form("chat-form"):
         question = st.text_area("Ask about Reserve Bank publications:", height=120)
         submitted = st.form_submit_button("Send")
         if submitted:
-            handle_submit(question)
+            handle_submit(question, use_reranking)
     st.divider()
     render_history()
 
