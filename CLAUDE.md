@@ -563,3 +563,9 @@ If an AI is generating code for this project, it must:
 - Implement a minimal but usable Streamlit chat UI that calls the RAG pipeline.
 
 Any deviation from this spec must be explicitly approved by the human; the AI should not "invent" new architectures, services, or directories on its own.
+
+---
+
+## 14. Additional Documentation
+
+For comprehensive line-by-line code explanations and learning the complete project implementation, see **`LEARN.md`**. That document provides detailed walkthroughs of every module, explaining WHY each decision was made, HOW the code works, and WHAT alternatives were considered.

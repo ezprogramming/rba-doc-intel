@@ -79,17 +79,21 @@ rba-doc-intel/
 │       └── test_feedback.py
 │
 ├── docs/                         # Documentation & guides
+│   ├── QUICK_REFERENCE.md       # Quick reference guide
+│   ├── CODEBASE_STRUCTURE.md    # This file (complete structure)
 │   ├── COMPLETE_PDF_RAG_INTERVIEW_GUIDE.md
-│   └── IMPROVEMENTS_SUMMARY.md
+│   ├── IMPROVEMENTS_SUMMARY.md
+│   └── EXPLORATION_SUMMARY.md
 │
 ├── pyproject.toml               # Dependencies & project config (uv)
 ├── docker-compose.yml           # Full stack orchestration
 ├── Dockerfile                   # App container (Python 3.11 + uv)
+├── Makefile                     # **Primary command interface** (make help)
 ├── .env.example                 # Environment template
 ├── README.md                     # Quick start & usage guide
 ├── CLAUDE.md                     # Hard constraints & spec
-├── LEARN.md                      # Technical deep-dive
-├── PLAN.md                       # Current & future roadmap
+├── LEARN.md                      # **Comprehensive line-by-line code learning guide (4,500+ lines)**
+├── PLAN.md                       # Implementation phases & status
 ├── AGENTS.md                     # AI agent guidelines
 └── uv.lock                       # Locked dependencies (generated)
 ```
@@ -897,3 +901,29 @@ Use `debug_dump.py` for quick stats; run `EXPLAIN ANALYZE` for slow queries.
 - [ ] Kafka/streaming for real-time ingestion
 - [ ] Additional vector stores (Elasticsearch, etc.)
 - [ ] Production scheduler (Airflow, Prefect, etc.)
+
+---
+
+## For Detailed Code Explanations
+
+This document provides the **structural overview** of the codebase. For comprehensive **line-by-line code explanations** with WHY/HOW/WHAT decisions, examples, and common pitfalls, see:
+
+**`LEARN.md`** (4,500+ lines covering all 12 sections)
+
+Sections include:
+1. Project Overview & Architecture
+2. Setup & Configuration (Makefile)
+3. Database Layer
+4. Storage Layer
+5. PDF Processing Pipeline
+6. Embedding Generation
+7. RAG Retrieval System
+8. LLM Integration
+9. User Interface (Streamlit)
+10. ML Engineering Features
+11. Scripts & CLI Tools
+12. Testing & Quality
+
+---
+
+Last Updated: 2024-11-11

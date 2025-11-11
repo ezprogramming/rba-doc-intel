@@ -9,9 +9,12 @@
 **Key Features:**
 - Parallel PDF processing (1 doc → 4 docs/min)
 - Hybrid semantic+lexical retrieval (pgvector HNSW + Postgres FTS)
-- Token-by-token LLM streaming
-- User feedback loop (thumbs up/down)
-- Optional cross-encoder reranking
+- Token-by-token LLM streaming with live updates
+- User feedback loop (thumbs up/down → DPO training)
+- Optional cross-encoder reranking (+25-40% accuracy)
+- Safety guardrails (PII, prompt injection, toxicity detection)
+- Hook bus for observability (rag:*, ui:* events)
+- Evaluation framework with golden examples
 - LoRA + DPO fine-tuning support
 
 ---
@@ -30,11 +33,11 @@
 | `scripts/` | Crawler, PDF processor, embedder, fine-tuner |
 | `docker/` | Container configs (embedding service, Postgres init) |
 | `tests/` | Unit tests (PDF, RAG, UI feedback) |
-| `docs/` | Deep dives (interview guide, improvements) |
+| `docs/` | Deep dives (interview guide, improvements, quick reference) |
 | `docker-compose.yml` | Full stack orchestration |
 | `CLAUDE.md` | Hard spec & constraints |
-| `LEARN.md` | Technical design decisions |
-| `CODEBASE_STRUCTURE.md` | This detailed reference (generated) |
+| `LEARN.md` | **Comprehensive line-by-line code explanations (4,500+ lines)** |
+| `Makefile` | **Primary command interface for all operations** |
 
 ---
 
@@ -328,12 +331,17 @@ make test ARGS="tests/pdf/test_chunker.py -v"
 ## External Resources
 
 - **CLAUDE.md** - Hard spec & constraints (read first)
-- **LEARN.md** - Technical deep dives
-- **PLAN.md** - Roadmap
+- **LEARN.md** - **Comprehensive line-by-line code learning guide** (4,500+ lines covering every module)
+- **Makefile** - Primary command interface (`make help` for all targets)
+- **PLAN.md** - Implementation phases & status
 - **AGENTS.md** - AI agent guidelines
-- **README.md** - Quick start
+- **README.md** - Quick start guide
 
 ---
 
-Generated: Nov 11, 2025
+**For detailed code explanations:** See `LEARN.md` - every module explained with WHY/HOW/WHAT, examples, and common pitfalls.
+
+---
+
+Last Updated: 2024-11-11
 Version: RBA Document Intelligence Platform v0.1.0

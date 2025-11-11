@@ -47,3 +47,17 @@
 - Schedule ingestion scripts via cron/Kubernetes Jobs invoking the relevant `make` targets (for example, `make refresh`).
 - Back up Postgres and MinIO volumes; document retention policies for raw PDFs vs derived artifacts.
 - Define alerting for crawler failures or embedding backlog (simple CLI exit codes consumed by external scheduler).
+
+---
+
+## Implementation Status
+
+All phases (0-5) have been completed and implemented via **Makefile targets**. The Makefile provides a centralized command interface for all operations:
+
+- **Bootstrap**: `make bootstrap` (build + sync deps)
+- **Services**: `make up`, `make up-models`, `make llm-pull`
+- **Ingestion**: `make crawl`, `make process`, `make embeddings`
+- **Development**: `make test`, `make lint`, `make format`
+- **ML engineering**: `make export-feedback`, `make finetune`
+
+For detailed line-by-line code explanations of the complete implementation, see **`LEARN.md`**.

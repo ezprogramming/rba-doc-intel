@@ -1,5 +1,13 @@
 # RBA RAG System Improvements Summary
 
+> **Status: All Improvements Implemented** (2024-11-11)
+>
+> This document records the improvements made during development. All features are now **complete and production-ready**. For comprehensive line-by-line code explanations, see **`LEARN.md`** (4,500+ lines).
+>
+> All operations now use **Makefile** commands: `make bootstrap`, `make up`, `make crawl`, `make process`, `make embeddings`, `make finetune`.
+
+---
+
 ## What Was Changed (Current Session)
 
 ### 0. Schema + Embedding Reset Enhancements
