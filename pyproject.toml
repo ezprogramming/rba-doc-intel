@@ -21,6 +21,15 @@ dependencies = [
     "camelot-py[cv]>=0.11.0",  # Table extraction from PDFs
     "opencv-python>=4.10.0",  # Image processing for chart detection
     "sentence-transformers>=2.3.0",  # Cross-encoder for reranking
+    # Fine-tuning dependencies (local M4 MacBook Pro)
+    "torch>=2.1.0",  # PyTorch with MPS support (Metal Performance Shaders)
+    "transformers>=4.36.0",  # Hugging Face transformers for model loading
+    "peft>=0.7.0",  # Parameter-Efficient Fine-Tuning (LoRA, QLoRA)
+    "trl>=0.7.0",  # Transformer Reinforcement Learning (DPO trainer)
+    "datasets>=2.16.0",  # Hugging Face datasets
+    "accelerate>=0.25.0",  # Distributed training utilities
+    # bitsandbytes>=0.42.0  # 4-bit quantization (NOT supported on MPS yet)
+    #                       # Uncomment when training on NVIDIA GPU (cloud)
 ]
 
 [project.optional-dependencies]
