@@ -192,19 +192,19 @@ Use a central `app/config.py` to load configuration via environment variables, e
 
 **Do not** hard-code credentials or local paths in code.
 
-### 5.2 uv usage
+### 5.2 Make/uv usage
 
 - Dependencies are defined in `pyproject.toml`.
-- Basic commands:
-  - `uv sync` – install dependencies.
-  - `uv run scripts/crawler_rba.py`
-  - `uv run scripts/process_pdfs.py`
-  - `uv run scripts/build_embeddings.py`
-  - `uv run python scripts/refresh_pdfs.py` (optional convenience wrapper)
-  - `uv run streamlit run app/ui/streamlit_app.py`
+- Basic workflow (always go through the Makefile wrappers so `uv run` executes inside the container with consistent flags):
+  - `make bootstrap` – install dependencies (`uv sync`).
+  - `make crawl`
+  - `make process`
+  - `make embeddings`
+  - `make refresh`
+  - `make streamlit`
   - (handled automatically) Postgres initializes schema/indexes from `/docker/postgres/initdb.d/*.sql` the first time the volume is created.
-  - `uv run pytest -q` before every commit/PR; add targeted unit tests beside new helpers.
-  - `docker compose up -d embedding` to ensure the embedding API is online before running backfills.
+  - `make test ARGS="-q"` before every commit/PR; add targeted unit tests beside new helpers.
+  - `make up-embedding` to ensure the embedding API is online before running backfills.
 
 **Do not** introduce other environment managers or direct `pip install` instructions.
 

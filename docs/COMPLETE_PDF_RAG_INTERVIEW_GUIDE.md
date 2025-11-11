@@ -1322,7 +1322,7 @@ Focus on providing investment-grade analysis with specific numbers and dates.
 
 ```bash
 # Re-chunk existing documents with new strategy
-uv run python scripts/process_pdfs.py --reprocess
+make process ARGS="--reprocess"
 
 # This will:
 # - Use ~768 token chunks with 15% overlap
@@ -1412,16 +1412,13 @@ Does your PDF have visual content?
 1. **Export preference pairs** – convert thumbs-up/down signals into DPO-ready JSONL:
 
    ```bash
-   docker compose run --rm app uv run python scripts/export_feedback_pairs.py \\
-     --output data/feedback_pairs.jsonl
+   make export-feedback ARGS="--output data/feedback_pairs.jsonl"
    ```
 
 2. **Train a LoRA adapter with TRL's DPOTrainer** – lightweight, single-GPU/M-series friendly:
 
    ```bash
-   docker compose run --rm app uv run python scripts/finetune_lora_dpo.py \\
-     --dataset data/feedback_pairs.jsonl \\
-     --output-dir models/rba-lora-dpo
+   make finetune ARGS="--dataset data/feedback_pairs.jsonl --output-dir models/rba-lora-dpo"
    ```
 
 3. **Deploy the adapter** – load the saved LoRA weights alongside the base HF model (or merge them) before benchmarking/serving via Ollama. Talking point: *"We run a nightly LoRA+DPO job using only our in-app feedback, so we can improve alignment without retraining the base model or paying cloud RLHF costs."*

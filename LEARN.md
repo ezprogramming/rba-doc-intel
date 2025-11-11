@@ -26,7 +26,7 @@ This doc explains the repository file-by-file and, for the core modules, line-by
 | `01_create_tables.sql` | 1–120 | Declares every table (`documents`, `pages`, `chunks`, `chat_*`, `feedback`, `tables`, `eval_*`). Note: `chunks.embedding` is `VECTOR(768)` and `section_hint`/`text_tsv` columns live here so ORM + SQL stay aligned. |
 | `02_create_indexes.sql` | 1–130 | Builds HNSW vector index, composite document indexes, **materializes `text_tsv`**, adds a trigger to keep it updated, and analyzes stats. |
 
-Because these run via the official Postgres entrypoint, `docker compose up` on a clean volume always yields the same schema without invoking Python migrations.
+Because these run via the official Postgres entrypoint, `make up` on a clean volume always yields the same schema without invoking Python migrations.
 
 ---
 
@@ -175,7 +175,7 @@ Stub that can re-score candidates with a cross-encoder when needed. Disabled by 
 - `llm`: `ollama/ollama:latest` container; we pull `qwen2.5:1.5b` by default for streaming chat.
 - `app`: Streamlit server that waits for Postgres/MinIO/embedding/llm before launching.
 
-**Tip:** use `docker compose up embedding llm` to keep model containers warm during development.
+**Tip:** use `make up-models` to keep model containers warm during development.
 
 ---
 
@@ -225,13 +225,13 @@ These scripts cover the supported workflows: ingestion, embeddings, diagnostics,
 Run the full suite with:
 
 ```bash
-docker compose run --rm app uv run pytest
+make test
 ```
 
 Under heavy development you can run targeted suites:
 
 ```bash
-docker compose run --rm app uv run pytest tests/ui/test_feedback.py
+make test ARGS="tests/ui/test_feedback.py"
 ```
 
 This keeps the feedback subsystem verified even if Postgres/MinIO aren’t seeded with data.

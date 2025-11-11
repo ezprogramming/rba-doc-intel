@@ -27,7 +27,7 @@
 ## Phase 3 – Embeddings & RAG Layer
 - `app/embeddings/client.py`: pluggable embedding interface (env-driven base URL/model/API key + timeout) hitting the embedding service.
 - `app/embeddings/indexer.py`: find chunks missing embeddings, batch call client, persist vectors.
-- `scripts/build_embeddings.py`: CLI entry to run indexer; integrate into docker workflow (`docker compose run app uv run scripts/build_embeddings.py`).
+- `scripts/build_embeddings.py`: CLI entry to run indexer; integrate into docker workflow via the Makefile target (`make embeddings`).
 - `app/rag/retriever.py`: similarity search via SQL query (pgvector `cosine_distance`) with filters (doc_type/date).
 - Persist `chunks.text_tsv` with a trigger so lexical search doesn't rebuild vectors on the fly; hybrid retrieval should weight semantic vs lexical scores (~0.7/0.3) per Pinecone/Cohere guidance.
 - `app/rag/llm_client.py`: generic chat/complete wrapper.
@@ -40,10 +40,10 @@
 
 ## Phase 5 – Testing, CI, and Docs
 - Testing: add `tests/` mirroring modules with pytest fixtures mocking MinIO/Postgres (use Moto/localstack alternatives or temporary sqlite+fake storage); include integration test invoking crawler→processor→retriever on sample PDFs stored under `tests/fixtures`.
-- CI: GitHub Actions workflow running `docker compose up -d postgres minio`, `docker compose run app uv run pytest -q`, plus lint (optional `ruff`, `mypy`).
-- Docs: keep `claude.md` authoritative spec, maintain `AGENTS.md` for quick contributor onboarding, and expand `README.md` with docker commands (`docker compose up -d`, `docker compose run app uv run scripts/...`), troubleshooting, and env var descriptions.
+- CI: GitHub Actions workflow running `make up-detached`, `make test ARGS="-q"`, plus lint (optional `make lint`, `mypy`).
+- Docs: keep `claude.md` authoritative spec, maintain `AGENTS.md` for quick contributor onboarding, and expand `README.md` with Makefile targets (`make crawl`, `make embeddings`, etc.), troubleshooting, and env var descriptions.
 
 ## Operational Considerations
-- Schedule ingestion scripts via cron/Kubernetes Jobs calling `docker compose run app ...`.
+- Schedule ingestion scripts via cron/Kubernetes Jobs invoking the relevant `make` targets (for example, `make refresh`).
 - Back up Postgres and MinIO volumes; document retention policies for raw PDFs vs derived artifacts.
 - Define alerting for crawler failures or embedding backlog (simple CLI exit codes consumed by external scheduler).

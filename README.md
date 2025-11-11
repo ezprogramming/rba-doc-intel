@@ -13,14 +13,15 @@ Local-first setup for crawling, processing, and querying Reserve Bank of Austral
 2. Build and install dependencies inside the app image:
 
    ```bash
-   docker compose build app
-   docker compose run --rm app uv sync
+   make bootstrap
    ```
+
+   Run `make help` anytime to list all available targets; pass extra script-specific flags via `ARGS="..."` (for example, `make embeddings ARGS="--reset"`).
 
 3. Launch the stack (Postgres + MinIO + Streamlit app):
 
    ```bash
-   docker compose up
+   make up
    ```
 
 Streamlit will be reachable on `http://localhost:${STREAMLIT_SERVER_PORT:-8501}` with live token streaming and thumbs up/down feedback on every response.
@@ -28,9 +29,9 @@ Streamlit will be reachable on `http://localhost:${STREAMLIT_SERVER_PORT:-8501}`
 4. Start the embedding and LLM services (run once, keep them running while you work):
 
    ```bash
-   docker compose up -d embedding llm
+   make up-models
    # Pull the lightweight multilingual LLM once
-   docker compose exec llm ollama pull qwen2.5:1.5b
+   make llm-pull MODEL=qwen2.5:1.5b
    ```
 
 ## Running Pipelines
@@ -38,11 +39,11 @@ Streamlit will be reachable on `http://localhost:${STREAMLIT_SERVER_PORT:-8501}`
 Use the same container for operational scripts so dependencies stay consistent:
 
 ```bash
-docker compose run --rm app uv run scripts/crawler_rba.py
-docker compose run --rm app uv run scripts/process_pdfs.py
-docker compose run --rm app uv run scripts/build_embeddings.py --batch-size 24 --parallel 2
+make crawl
+make process
+make embeddings ARGS="--batch-size 24 --parallel 2"
 # Or run them all sequentially:
-docker compose run --rm app uv run python scripts/refresh_pdfs.py
+make refresh
 ```
 
 ### Chunking & Retrieval Defaults
@@ -69,11 +70,10 @@ docker compose run --rm app uv run python scripts/refresh_pdfs.py
 Whenever you tweak chunk sizes/cleaning you should wipe the old vectors so embeddings reflect the new text spans:
 
 ```bash
-docker compose run --rm app \
-  uv run python scripts/build_embeddings.py --reset
+make embeddings-reset
 ```
 
-The `--reset` flag nulls all `chunks.embedding` values (or use `--document-id <uuid>` to target a subset) and downgrades document statuses back to `CHUNKS_BUILT`. The script then refills embeddings with smaller default batches (24 chunks, 2 workers) so the CPU embedding container stays responsive; override via CLI flags if you have more headroom.
+The `embeddings-reset` target nulls all `chunks.embedding` values (or pass `ARGS="--document-id <uuid>"` to target a subset) and downgrades document statuses back to `CHUNKS_BUILT`. The script then refills embeddings with smaller default batches (24 chunks, 2 workers) so the CPU embedding container stays responsive; override via `ARGS` if you have more headroom.
 
 Set `CRAWLER_YEAR_FILTER` in `.env` (for example, `CRAWLER_YEAR_FILTER=2024`) to limit ingestion to specific years while debugging. The crawler remains idempotent, so you can widen or clear the filter later and rerun the same commands to backfill the rest of the corpus.
 
@@ -84,16 +84,13 @@ Set `CRAWLER_YEAR_FILTER` in `.env` (for example, `CRAWLER_YEAR_FILTER=2024`) to
 1. Export preference pairs from stored thumbs-up/down feedback:
 
    ```bash
-   docker compose run --rm app uv run python scripts/export_feedback_pairs.py \\
-     --output data/feedback_pairs.jsonl
+   make export-feedback ARGS="--output data/feedback_pairs.jsonl"
    ```
 
 2. Train a lightweight LoRA adapter with TRL's DPOTrainer (default base model: `microsoft/phi-2`):
 
    ```bash
-   docker compose run --rm app uv run python scripts/finetune_lora_dpo.py \\
-     --dataset data/feedback_pairs.jsonl \\
-     --output-dir models/rba-lora-dpo
+   make finetune ARGS="--dataset data/feedback_pairs.jsonl --output-dir models/rba-lora-dpo"
    ```
 
    The job fits on a single GPU or M-series Mac. The resulting adapter lives under `models/rba-lora-dpo` and can be loaded alongside the base model for evaluation.
@@ -110,7 +107,7 @@ Set `CRAWLER_YEAR_FILTER` in `.env` (for example, `CRAWLER_YEAR_FILTER=2024`) to
 
 **Why run Postgres inside Docker if it’s “just a database”?**
 
-Keeping Postgres (and pgvector) inside `docker compose` ensures consistent extensions, locales, and init scripts (`docker/postgres/initdb.d/00_extensions.sql`, `01_create_tables.sql`, `02_create_indexes.sql`). You get reproducible migrations on every fresh `docker compose up` without having to manage a separate local instance.
+Keeping Postgres (and pgvector) inside Docker Compose ensures consistent extensions, locales, and init scripts (`docker/postgres/initdb.d/00_extensions.sql`, `01_create_tables.sql`, `02_create_indexes.sql`). You get reproducible migrations on every fresh `make up` without having to manage a separate local instance.
 
 **How many SQL files does Postgres apply?**
 
@@ -131,11 +128,11 @@ On an M-series Mac the FastAPI embedding service processes ~120 chunks/second at
 ## Testing & Linting
 
 ```bash
-docker compose run --rm app uv run pytest
-docker compose run --rm app uv run ruff check
+make test
+make lint
 ```
 
-> Tip: running the full test suite requires Docker Desktop (for Postgres/MinIO) and access to the `uv` cache directory. For a quick smoke test of the feedback helpers you can run `docker compose run --rm app uv run pytest tests/ui/test_feedback.py`.
+> Tip: running the full test suite requires Docker Desktop (for Postgres/MinIO) and access to the `uv` cache directory. For a quick smoke test of the feedback helpers you can run `make test ARGS="tests/ui/test_feedback.py"`.
 
 ## Regenerating Dependencies
 

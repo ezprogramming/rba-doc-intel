@@ -288,29 +288,18 @@ docs/COMPLETE_PDF_RAG_INTERVIEW_GUIDE.md - Consolidated guide
 
 ```bash
 # Check current embedding progress
-docker compose exec app uv run python -c "
-from app.db.session import session_scope
-from app.db.models import Chunk
-with session_scope() as session:
-    total = session.query(Chunk).count()
-    embedded = session.query(Chunk).filter(Chunk.embedding.is_not(None)).count()
-    print(f'Embedded: {embedded}/{total} ({embedded*100//total}%)')
-"
+make run CMD='uv run python -c "from app.db.session import session_scope; from app.db.models import Chunk; \
+with session_scope() as session: total=session.query(Chunk).count(); embedded=session.query(Chunk).filter(Chunk.embedding.is_not(None)).count(); \
+pct=(embedded*100)//total if total else 0; print(f'Embedded: {embedded}/{total} ({pct}%)')"'
 
 # Test query via UI
 # Navigate to: http://localhost:8501
 # Query: "What is the RBA's inflation outlook for 2024?"
 
 # Compare chunk before/after
-docker compose exec app uv run python -c "
-from app.db.session import session_scope
-from app.db.models import Chunk
-with session_scope() as session:
-    chunk = session.query(Chunk).first()
-    print(f'Chunk size: {len(chunk.text.split())} tokens')
-    print(f'Section hint: {chunk.section_hint}')
-    print(f'Has embedding: {chunk.embedding is not None}')
-"
+make run CMD='uv run python -c "from app.db.session import session_scope; from app.db.models import Chunk; \
+with session_scope() as session: chunk=session.query(Chunk).first(); print(f'Chunk size: {len(chunk.text.split())} tokens'); \
+print(f'Section hint: {chunk.section_hint}'); print(f'Has embedding: {chunk.embedding is not None}')"'
 ```
 
 ---
