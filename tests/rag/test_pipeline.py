@@ -12,6 +12,7 @@ def test_compose_analysis_handles_chunks():
         publication_date="2025-11-04",
         page_start=2,
         page_end=3,
+        section_hint=None,
         score=0.1,
     )
     analysis = _compose_analysis([chunk])

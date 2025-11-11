@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import Callable, List
 from uuid import UUID
 
 from app.db.models import ChatMessage, ChatSession
@@ -20,11 +20,20 @@ class AnswerResponse:
     analysis: str | None = None
 
 
-SYSTEM_PROMPT = (
-    "You are an analyst answering questions strictly using Reserve Bank of Australia report excerpts. "
-    "Cite document titles and page ranges from provided context. "
-    "If the context lacks the answer, state that clearly."
-)
+SYSTEM_PROMPT = """
+You are a financial analyst specializing in Australian macroeconomics and monetary policy.
+You answer questions strictly using Reserve Bank of Australia (RBA) report excerpts.
+
+Guidelines:
+1. Cite specific document titles and page ranges
+2. Include quantitative data when available (forecasts, percentages, dates)
+3. Explain trends and their implications for the Australian economy
+4. If context lacks the answer, state this clearly and explain what information is missing
+5. For forecasts, always specify the time period and any caveats mentioned
+6. Provide investment-grade analysis with specific numbers, dates, and reasoning
+
+Focus on actionable insights for economic and investment decision-making.
+"""
 
 
 def _format_context(chunks: List[RetrievedChunk]) -> str:
@@ -45,13 +54,26 @@ def _compose_analysis(chunks: List[RetrievedChunk]) -> str:
     return "Answer grounded in " + "; ".join(summaries)
 
 
-def answer_query(query: str, session_id: UUID | None = None, top_k: int = 5) -> AnswerResponse:
+TokenHandler = Callable[[str], None]
+
+
+def answer_query(
+    query: str,
+    session_id: UUID | None = None,
+    top_k: int = 2,
+    stream_handler: TokenHandler | None = None,
+) -> AnswerResponse:
     embedding_client = EmbeddingClient()
     llm_client = LLMClient()
 
     question_vector = embedding_client.embed([query]).vectors[0]
     with session_scope() as session:
-        chunks = retrieve_similar_chunks(session, question_vector, limit=top_k)
+        chunks = retrieve_similar_chunks(
+            session,
+            query_text=query,
+            query_embedding=question_vector,
+            limit=top_k,
+        )
         chat_session = None
         if session_id:
             chat_session = session.get(ChatSession, session_id)
@@ -66,7 +88,10 @@ def answer_query(query: str, session_id: UUID | None = None, top_k: int = 5) -> 
     context = _format_context(chunks)
     user_content = f"Question: {query}\n\nContext:\n{context}"
     messages = [{"role": "user", "content": user_content}]
-    answer_text = llm_client.complete(SYSTEM_PROMPT, messages)
+    if stream_handler:
+        answer_text = llm_client.stream(SYSTEM_PROMPT, messages, stream_handler)
+    else:
+        answer_text = llm_client.complete(SYSTEM_PROMPT, messages)
 
     evidence_payload = [
         {
@@ -78,6 +103,7 @@ def answer_query(query: str, session_id: UUID | None = None, top_k: int = 5) -> 
             "pages": [chunk.page_start, chunk.page_end],
             "score": chunk.score,
             "snippet": chunk.text[:500],
+            "section_hint": chunk.section_hint,
         }
         for chunk in chunks
     ]

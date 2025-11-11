@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import List
+import json
+from typing import Callable, List
 
 import requests
 
@@ -16,11 +17,60 @@ class LLMClient:
         self._model_name = settings.llm_model_name
         self._api_key = settings.llm_api_key
 
+    def _build_payload(self, system_prompt: str, messages: List[dict], stream: bool) -> dict:
+        prompt_parts = [system_prompt]
+        for msg in messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            prompt_parts.append(f"{role}: {content}")
+        full_prompt = "\n\n".join(prompt_parts)
+        return {
+            "model": self._model_name,
+            "prompt": full_prompt,
+            "stream": stream,
+        }
+
     def complete(self, system_prompt: str, messages: List[dict]) -> str:
-        payload = {"model": self._model_name, "system": system_prompt, "messages": messages}
+        payload = self._build_payload(system_prompt, messages, stream=False)
         headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-        response = requests.post(f"{self._base_url}/chat/completions", json=payload, headers=headers, timeout=120)
+        response = requests.post(
+            f"{self._base_url}/api/generate",
+            json=payload,
+            headers=headers,
+            timeout=240,
+        )
         response.raise_for_status()
         data = response.json()
-        return data["choices"][0]["message"]["content"]
+        return data["response"]
 
+    def stream(
+        self,
+        system_prompt: str,
+        messages: List[dict],
+        on_token: Callable[[str], None] | None = None,
+    ) -> str:
+        payload = self._build_payload(system_prompt, messages, stream=True)
+        headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+        final_text = ""
+        with requests.post(
+            f"{self._base_url}/api/generate",
+            json=payload,
+            headers=headers,
+            stream=True,
+            timeout=240,
+        ) as response:
+            response.raise_for_status()
+            for raw_line in response.iter_lines():
+                if not raw_line:
+                    continue
+                data = json.loads(raw_line.decode("utf-8"))
+                if data.get("done"):
+                    break
+                token = data.get("response", "")
+                if token:
+                    final_text += token
+                    if on_token:
+                        on_token(token)
+                if data.get("error"):
+                    raise RuntimeError(data["error"])
+        return final_text

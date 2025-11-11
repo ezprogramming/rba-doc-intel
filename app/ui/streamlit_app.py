@@ -18,6 +18,8 @@ def init_session() -> None:
         st.session_state.chat_session_id = str(uuid4())
     if "history" not in st.session_state:
         st.session_state.history = []
+    if "streaming_answer" not in st.session_state:
+        st.session_state.streaming_answer = ""
 
 
 def render_history() -> None:
@@ -26,8 +28,15 @@ def render_history() -> None:
         st.markdown(f"**Assistant:** {entry['answer']}")
         with st.expander("Evidence"):
             for evidence in entry["evidence"]:
+                pages = evidence["pages"]
+                page_label = (
+                    f"pages {pages[0]}-{pages[1]}"
+                    if all(p is not None for p in pages)
+                    else "pages n/a"
+                )
+                section = f" · {evidence['section_hint']}" if evidence.get("section_hint") else ""
                 st.write(
-                    f"- {evidence['doc_type']} · {evidence['title']} · Pages {evidence['pages'][0]}-{evidence['pages'][1]}"
+                    f"- {evidence['doc_type']} · {evidence['title']}{section} · {page_label}"
                 )
                 st.caption(evidence["snippet"])
 
@@ -36,7 +45,21 @@ def handle_submit(question: str) -> None:
     if not question.strip():
         st.warning("Please enter a question.")
         return
-    response = answer_query(question, session_id=st.session_state.chat_session_id)
+    st.markdown(f"**You:** {question}")
+    answer_placeholder = st.empty()
+
+    def on_token(delta: str) -> None:
+        st.session_state.streaming_answer += delta
+        answer_placeholder.markdown(f"**Assistant:** {st.session_state.streaming_answer}")
+
+    st.session_state.streaming_answer = ""
+    response = answer_query(
+        question,
+        session_id=st.session_state.chat_session_id,
+        stream_handler=on_token,
+    )
+    answer_placeholder.empty()
+    st.session_state.streaming_answer = ""
     st.session_state.history.append(
         {
             "question": question,

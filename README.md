@@ -30,7 +30,7 @@ Streamlit will be reachable on `http://localhost:${STREAMLIT_SERVER_PORT:-8501}`
    ```bash
    docker compose up -d embedding llm
    # Pull the lightweight multilingual LLM once
-   docker compose exec llm ollama pull qwen2:7b
+   docker compose exec llm ollama pull qwen2.5:1.5b
    ```
 
 If you prefer to ensure the schema manually outside of `docker compose up`, run:
@@ -54,6 +54,12 @@ docker compose run --rm app uv run python scripts/refresh_pdfs.py
 Set `CRAWLER_YEAR_FILTER` in `.env` (for example, `CRAWLER_YEAR_FILTER=2024`) to limit ingestion to specific years while debugging. The crawler remains idempotent, so you can widen or clear the filter later and rerun the same commands to backfill the rest of the corpus.
 
 `scripts/debug_dump.py` prints current document/page/chunk counts for quick sanity checks.
+
+### What’s in the stack now?
+
+- **Chunking:** recursive, paragraph-aware splitter capped at ~768 tokens with 15 % overlap; section headers are stored as `section_hint` for richer evidence.
+- **Retrieval:** pgvector cosine search fused with Postgres `ts_rank_cd` keyword matches for hybrid semantic + lexical recall.
+- **LLM UX:** the Streamlit chat streams responses token-by-token from Ollama (default `qwen2.5:1.5b`), so answers start appearing while the long-form completion is still running.
 
 ## Testing & Linting
 

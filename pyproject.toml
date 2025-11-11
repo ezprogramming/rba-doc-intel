@@ -17,6 +17,10 @@ dependencies = [
     "pytest>=7.4.4",
     "python-dateutil>=2.8.2",
     "tenacity>=8.2.3",
+    # ML & Quality improvements
+    "camelot-py[cv]>=0.11.0",  # Table extraction from PDFs
+    "opencv-python>=4.10.0",  # Image processing for chart detection
+    "sentence-transformers>=2.3.0",  # Cross-encoder for reranking
 ]
 
 [project.optional-dependencies]
