@@ -37,10 +37,28 @@ services:
     environment:
       MODEL_ID: nomic-ai/nomic-embed-text-v1.5
       EMBEDDING_BATCH_SIZE: 32
+      PYTORCH_ENABLE_MPS_FALLBACK: 1  # For M-series Macs
     ports:
       - "8080:8000"
     volumes:
       - embedding_data:/root/.cache/huggingface
+    # NVIDIA GPU support (Linux only, gracefully ignored on Mac/Windows)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  llm:
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_HOST: 0.0.0.0
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
 
   app:
     build:
@@ -64,6 +82,8 @@ services:
         condition: service_started
       embedding:
         condition: service_started
+      llm:
+        condition: service_started
     volumes:
       - .:/app
       - uv_state:/opt/venv
@@ -75,3 +95,4 @@ volumes:
   uv_state:
   uv_cache:
   embedding_data:
+  ollama_data:

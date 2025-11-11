@@ -25,6 +25,14 @@ Local-first setup for crawling, processing, and querying Reserve Bank of Austral
 
 Streamlit will be reachable on `http://localhost:${STREAMLIT_SERVER_PORT:-8501}`.
 
+4. Start the embedding and LLM services (run once, keep them running while you work):
+
+   ```bash
+   docker compose up -d embedding llm
+   # Pull the lightweight multilingual LLM once
+   docker compose exec llm ollama pull qwen2:7b
+   ```
+
 If you prefer to ensure the schema manually outside of `docker compose up`, run:
 
 ```bash
