@@ -1,6 +1,14 @@
 # RBA RAG System Improvements Summary
 
-## What Was Changed (Today's Session)
+## What Was Changed (Current Session)
+
+### 0. Schema + Embedding Reset Enhancements
+- Docker now applies a clean migration chain: `00_extensions.sql` (pgcrypto/pgvector), `01_create_tables.sql` (documents/pages/chunks/chat/eval), `02_create_indexes.sql` (HNSW + text indexes + triggers). This keeps Postgres initialization deterministic and explains why we keep it inside Compose.
+- Added a persisted `chunks.text_tsv` column + trigger-driven updates so lexical search never rebuilds `to_tsvector` on each query. Hybrid retrieval now simply reads the column, mirroring Pinecone/Cohere best practices (semantic weight 0.7, lexical 0.3).
+- `scripts/build_embeddings.py --reset [--document-id UUID ...]` wipes old vectors and downgrades document statuses to `CHUNKS_BUILT` before spinning up the multi-threaded backfill, satisfying the “delete old embeddings after chunk changes” requirement.
+- `scripts/finetune_lora_dpo.py` now detects CUDA/MPS once at startup, so laptops without GPUs quietly run fp32 while CUDA boxes flip to fp16 for free speedups.
+- Embedding service hardening: container runs with `restart: unless-stopped` plus conservative defaults (batch 16 in service, 24 in CLI) so CPU hosts don’t thrash during backfills.
+- Added a hook bus (`app/rag/hooks.py`) with default logging subscribers and wired it into `answer_query()` + the Streamlit feedback loop; downstream tooling can now listen for lifecycle events without touching core code.
 
 ### 1. Text Cleaner Enhancement (app/pdf/cleaner.py)
 **Before:**
@@ -28,7 +36,7 @@ return " ".join(lines).replace("\n ", "\n\n")
 **After (current prod):**
 - ✅ 768-token cap with ~15 % overlap → respects embedding latency while keeping rich context
 - ✅ Recursive splits (paragraph → sentence → word) + paragraph-preserving cleaner
-- ✅ Section header extraction (`section_hint`) saved to Postgres for UI/Evidence
+- ✅ Section header extraction (`section_hint`) saved to Postgres for UI/Evidence (regex now covers uppercase headings + multi-level numbering, resulting in far richer evidence breadcrumbs)
 - Result: 526 chunks for 14 documents (**77 % fewer chunks than the original baseline**)
 
 **Code highlights:**
@@ -175,8 +183,10 @@ CREATE TABLE chunks (
 
 ### Current Test Environment
 - Embedding progress: 526/526 chunks (100%) with hybrid retrieval enabled
-- Ready for testing: YES (full coverage, streaming chat in UI)
+- Ready for testing: YES (full coverage, streaming chat + feedback UI)
 - App status: Running on http://localhost:8501
+- Unit coverage: Added `tests/ui/test_feedback.py` to lock down the thumbs-up/down helper logic.
+- Feedback loop wired into fine-tuning export + LoRA DPO trainer (`scripts/export_feedback_pairs.py`, `scripts/finetune_lora_dpo.py`).
 
 ### Test Queries Prepared
 1. "What is the RBA's inflation outlook?"
@@ -211,6 +221,7 @@ embedding:
 2. Capture latency metrics per query + LLM logs
 3. Roll Ragas evaluation into CI using the curated prompts above
 4. Document the hybrid retrieval/streaming design (this file + README)
+5. Iterate on LoRA+DPO adapter training as fresh feedback arrives (scripts checked in).
 
 ### Phase 2 (Next Week)
 1. **Table Extraction** - Quick win

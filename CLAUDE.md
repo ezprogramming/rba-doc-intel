@@ -202,7 +202,7 @@ Use a central `app/config.py` to load configuration via environment variables, e
   - `uv run scripts/build_embeddings.py`
   - `uv run python scripts/refresh_pdfs.py` (optional convenience wrapper)
   - `uv run streamlit run app/ui/streamlit_app.py`
-  - `uv run python scripts/bootstrap_db.py` (idempotent schema/bootstrap helper invoked automatically by docker compose startup)
+  - (handled automatically) Postgres initializes schema/indexes from `/docker/postgres/initdb.d/*.sql` the first time the volume is created.
   - `uv run pytest -q` before every commit/PR; add targeted unit tests beside new helpers.
   - `docker compose up -d embedding` to ensure the embedding API is online before running backfills.
 
@@ -253,6 +253,7 @@ Represents text chunks used for RAG.
 - `text: TEXT`
 - `embedding: VECTOR` (pgvector column, nullable until generated)
 - `section_hint: TEXT` (e.g. `Inflation`, `Housing`, optional)
+- `text_tsv: TSVECTOR` (materialized full-text index maintained via trigger for lexical search)
 - `created_at: TIMESTAMPTZ`
 - `updated_at: TIMESTAMPTZ`
 

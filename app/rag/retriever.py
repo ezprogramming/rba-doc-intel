@@ -171,7 +171,7 @@ def retrieve_similar_chunks(
     # Example: "RBA meeting on 2024-05-07" → date and entity better matched by keywords
     query_text = (query_text or "").strip()
     if lexical_weight > 0 and query_text:
-        ts_document = func.to_tsvector("english", Chunk.text)
+        ts_document = Chunk.text_tsv
         ts_query = func.websearch_to_tsquery("english", query_text)
         lexical_score = func.ts_rank_cd(ts_document, ts_query).label("lexical_rank")
         lexical_stmt = (
@@ -188,7 +188,11 @@ def retrieve_similar_chunks(
             lexical_score,
             )
             .join(Document, Chunk.document_id == Document.id)
-            .where(lexical_score > 0)
+            .where(
+                Chunk.text_tsv.is_not(None),
+                lexical_score > 0,
+                Chunk.text_tsv.op('@@')(ts_query),
+            )
             .order_by(desc(lexical_score))
             .limit(retrieval_limit)  # Use dynamic limit based on reranking
         )
@@ -242,8 +246,8 @@ def retrieve_similar_chunks(
             )
         )
 
-    # Step 3: Sort by hybrid score and optionally rerank
-    results.sort(key=lambda chunk: chunk.score, reverse=True)
+    # Step 3: Sort by hybrid score (tie-breaking by id) and optionally rerank
+    results.sort(key=lambda chunk: (-chunk.score, chunk.chunk_id))
 
     # If reranking is disabled, return top-k by hybrid score
     if not rerank:

@@ -226,19 +226,19 @@ def main(batch_size: int = 10, max_workers: int = 4) -> None:
 if __name__ == "__main__":
     # Parse command-line arguments for flexibility
     # Usage: uv run scripts/process_pdfs.py --batch-size 20 --workers 8
-    parser = argparse.ArgumentParser(description="Process PDFs in parallel")
-    parser.add_argument(
+    arg_parser = argparse.ArgumentParser(description="Process PDFs in parallel")
+    arg_parser.add_argument(
         "--batch-size",
         type=int,
         default=10,
         help="Documents to fetch per batch (default: 10)"
     )
-    parser.add_argument(
+    arg_parser.add_argument(
         "--workers",
         type=int,
         default=4,
         help="Parallel worker threads (default: 4, recommended: 2-8)"
     )
-    args = parser.parse_args()
+    args = arg_parser.parse_args()
 
     main(batch_size=args.batch_size, max_workers=args.workers)

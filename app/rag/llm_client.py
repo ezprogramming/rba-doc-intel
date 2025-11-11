@@ -39,6 +39,12 @@ class LLMClient:
             headers=headers,
             timeout=240,
         )
+        if response.status_code == 404:
+            raise RuntimeError(
+                "LLM model not found on the Ollama server. "
+                "Run 'docker compose exec llm ollama pull {model}' and retry."
+                .format(model=self._model_name)
+            )
         response.raise_for_status()
         data = response.json()
         return data["response"]
@@ -59,6 +65,12 @@ class LLMClient:
             stream=True,
             timeout=240,
         ) as response:
+            if response.status_code == 404:
+                raise RuntimeError(
+                    "LLM model not found on the Ollama server. "
+                    "Run 'docker compose exec llm ollama pull {model}' and retry."
+                    .format(model=self._model_name)
+                )
             response.raise_for_status()
             for raw_line in response.iter_lines():
                 if not raw_line:

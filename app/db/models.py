@@ -7,7 +7,7 @@ from enum import Enum as PyEnum
 from uuid import uuid4, UUID
 
 from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID, TSVECTOR
 from sqlalchemy.orm import declarative_base, relationship
 
 from pgvector.sqlalchemy import Vector
@@ -80,6 +80,7 @@ class Chunk(Base):
     text = Column(Text, nullable=False)
     embedding = Column(Vector(768), nullable=True)
     section_hint = Column(String, nullable=True)
+    text_tsv = Column(TSVECTOR, nullable=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     updated_at = Column(
         DateTime(timezone=True),
@@ -196,7 +197,7 @@ class EvalExample(Base):
     category = Column(String, nullable=True)  # inflation/employment/forecasts/etc
 
     # Flexible extension for future fields
-    metadata = Column(JSON, nullable=True)
+    metadata_json = Column(JSON, nullable=True)
 
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
 

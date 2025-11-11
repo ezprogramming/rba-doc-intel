@@ -30,6 +30,7 @@ import streamlit as st
 
 from app.db.models import ChatMessage, Feedback
 from app.db.session import session_scope
+from app.rag.hooks import hooks
 from app.rag.pipeline import answer_query
 
 
@@ -55,8 +56,6 @@ def init_session() -> None:
         st.session_state.chat_session_id = str(uuid4())
     if "history" not in st.session_state:
         st.session_state.history = []
-    if "streaming_answer" not in st.session_state:
-        st.session_state.streaming_answer = ""
     if "feedback_state" not in st.session_state:
         # Track feedback for each message: message_id -> score
         st.session_state.feedback_state = {}
@@ -103,6 +102,13 @@ def store_feedback(message_id: int, score: int, comment: str | None = None) -> N
             )
             session.add(feedback)
 
+    hooks.emit(
+        "ui:feedback_recorded",
+        message_id=message_id,
+        score=score,
+        comment=comment,
+    )
+
 
 def render_history() -> None:
     """Render chat history with feedback buttons.
@@ -123,47 +129,45 @@ def render_history() -> None:
         st.markdown(f"**You:** {entry['question']}")
 
         # Display answer
-        st.markdown(f"**Assistant:** {entry['answer']}")
+        pending_flag = entry.get("pending")
+        status_suffix = " _(generating...)_" if pending_flag else ""
+        st.markdown(f"**Assistant:** {entry['answer']}{status_suffix}")
+        if entry.get("error"):
+            st.error(entry["error"])
 
-        # Feedback buttons
-        # Why use columns? Place buttons side-by-side
+        # Feedback buttons are only shown once the response is finalized
         col1, col2, col3 = st.columns([1, 1, 10])
-
-        # Get current feedback state for this message
-        message_id = entry.get("message_id")
-        current_feedback = st.session_state.feedback_state.get(message_id, 0)
-
-        # Thumbs up button
-        with col1:
-            # Show filled thumb if already thumbs up, outline otherwise
-            thumb_up_label = "👍" if current_feedback == 1 else "👍"
-            if st.button(thumb_up_label, key=f"up_{idx}", disabled=current_feedback == 1):
-                if message_id:
-                    store_feedback(message_id, score=1)
-                    st.session_state.feedback_state[message_id] = 1
-                    st.success("Thanks for your feedback!")
-                    st.rerun()
-
-        # Thumbs down button
-        with col2:
-            # Show filled thumb if already thumbs down, outline otherwise
-            thumb_down_label = "👎" if current_feedback == -1 else "👎"
-            if st.button(thumb_down_label, key=f"down_{idx}", disabled=current_feedback == -1):
-                if message_id:
-                    store_feedback(message_id, score=-1)
-                    st.session_state.feedback_state[message_id] = -1
-                    # Optional: prompt for comment on negative feedback
-                    st.warning("Feedback recorded. What went wrong?")
-                    # TODO: Add comment input field
-                    st.rerun()
-
-        # Show feedback status
-        if current_feedback == 1:
+        if pending_flag or not entry.get("message_id"):
             with col3:
-                st.caption("✓ Marked helpful")
-        elif current_feedback == -1:
-            with col3:
-                st.caption("✗ Marked unhelpful")
+                st.caption("Feedback available after the response is ready.")
+        else:
+            message_id = entry.get("message_id")
+            current_feedback = st.session_state.feedback_state.get(message_id, 0)
+
+            with col1:
+                thumb_up_label = "👍" if current_feedback == 1 else "👍"
+                if st.button(thumb_up_label, key=f"up_{idx}", disabled=current_feedback == 1):
+                    if message_id:
+                        store_feedback(message_id, score=1)
+                        st.session_state.feedback_state[message_id] = 1
+                        st.success("Thanks for your feedback!")
+                        st.experimental_rerun()
+
+            with col2:
+                thumb_down_label = "👎" if current_feedback == -1 else "👎"
+                if st.button(thumb_down_label, key=f"down_{idx}", disabled=current_feedback == -1):
+                    if message_id:
+                        store_feedback(message_id, score=-1)
+                        st.session_state.feedback_state[message_id] = -1
+                        st.warning("Feedback recorded. What went wrong?")
+                        st.experimental_rerun()
+
+            if current_feedback == 1:
+                with col3:
+                    st.caption("✓ Marked helpful")
+            elif current_feedback == -1:
+                with col3:
+                    st.caption("✗ Marked unhelpful")
 
         # Evidence section (expandable)
         with st.expander("Evidence"):
@@ -204,52 +208,67 @@ def handle_submit(question: str) -> None:
         st.warning("Please enter a question.")
         return
 
-    st.markdown(f"**You:** {question}")
+    hooks.emit(
+        "ui:question_submitted",
+        question=question,
+        session_id=st.session_state.chat_session_id,
+    )
+
+    entry = {
+        "question": question,
+        "answer": "",
+        "evidence": [],
+        "message_id": None,
+        "pending": True,
+        "error": None,
+    }
+    st.session_state.history.append(entry)
     answer_placeholder = st.empty()
 
     def on_token(delta: str) -> None:
-        """Stream callback for live answer updates."""
-        st.session_state.streaming_answer += delta
-        answer_placeholder.markdown(f"**Assistant:** {st.session_state.streaming_answer}")
+        entry["answer"] += delta
+        answer_placeholder.markdown(f"**Assistant:** {entry['answer']} _(generating...)_")
 
-    # Generate answer with streaming
-    st.session_state.streaming_answer = ""
-    response = answer_query(
-        question,
-        session_id=st.session_state.chat_session_id,
-        stream_handler=on_token,
-    )
-    answer_placeholder.empty()
-    st.session_state.streaming_answer = ""
-
-    # Retrieve message_id from database
-    # Why query database? answer_query() stores messages but doesn't return IDs
-    # We need the assistant message ID to link feedback
-    message_id = None
-    with session_scope() as session:
-        # Get latest assistant message for this session
-        # Assumption: answer_query() just created it
-        latest_message = (
-            session.query(ChatMessage)
-            .filter(
-                ChatMessage.session_id == UUID(st.session_state.chat_session_id),
-                ChatMessage.role == "assistant"
-            )
-            .order_by(ChatMessage.created_at.desc())
-            .first()
+    try:
+        response = answer_query(
+            question,
+            session_id=st.session_state.chat_session_id,
+            stream_handler=on_token,
         )
-        if latest_message:
-            message_id = latest_message.id
+        entry["answer"] = response.answer
+        entry["evidence"] = response.evidence
+        hooks.emit(
+            "ui:answer_rendered",
+            session_id=st.session_state.chat_session_id,
+            evidence_count=len(response.evidence),
+        )
 
-    # Store in history with message_id
-    st.session_state.history.append(
-        {
-            "question": question,
-            "answer": response.answer,
-            "evidence": response.evidence,
-            "message_id": message_id,  # Link to database record for feedback
-        }
-    )
+        # Retrieve message_id from database for feedback linkage
+        with session_scope() as session:
+            latest_message = (
+                session.query(ChatMessage)
+                .filter(
+                    ChatMessage.session_id == UUID(st.session_state.chat_session_id),
+                    ChatMessage.role == "assistant"
+                )
+                .order_by(ChatMessage.created_at.desc())
+                .first()
+            )
+            if latest_message:
+                entry["message_id"] = latest_message.id
+                hooks.emit(
+                    "ui:message_committed",
+                    session_id=st.session_state.chat_session_id,
+                    message_id=latest_message.id,
+                )
+
+    except Exception as exc:  # noqa: BLE001
+        entry["error"] = str(exc)
+        if not entry["answer"]:
+            entry["answer"] = "Encountered an error while generating a response."
+    finally:
+        entry["pending"] = False
+        answer_placeholder.empty()
 
 
 def main() -> None:

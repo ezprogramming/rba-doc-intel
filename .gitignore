@@ -16,6 +16,12 @@ __pycache__/
 # Local data
 /storage/
 *.db
+data/
+models/
+*.jsonl
+
+# macOS cruft
+.DS_Store
 
 # uv cache
 .uv/

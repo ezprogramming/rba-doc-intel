@@ -146,19 +146,47 @@ def _extract_section_hint(text: str) -> str | None:
     - "Chapter 3: Inflation"
     - "Box A: Housing Market"
     """
-    # Pattern 1: "3.2 Section Title" or "3.2: Section Title"
-    match = re.search(r"^(\d+\.\d+[\:\.]?\s+[A-Z][^\n]{5,50})", text[:200])
-    if match:
-        return match.group(1).strip()
+    head = text[:800]
+    lines = [line.strip(" -\t") for line in head.splitlines() if line.strip()]
 
-    # Pattern 2: "Chapter N: Title"
-    match = re.search(r"^(Chapter\s+\d+[\:\.]?\s+[A-Z][^\n]{5,50})", text[:200], re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
+    def _match_patterns(candidate: str) -> str | None:
+        # Pattern 1: "3.2 Section Title" or nested numbering "2.3.1"
+        enum = re.match(r"^(\d+(?:\.\d+){0,2})[\.:]?\s+(.{3,80})", candidate)
+        if enum:
+            return f"{enum.group(1)} {enum.group(2).strip()}"
 
-    # Pattern 3: "Box X: Title"
-    match = re.search(r"^(Box\s+[A-Z][\:\.]?\s+[A-Z][^\n]{5,50})", text[:200], re.IGNORECASE)
-    if match:
-        return match.group(1).strip()
+        # Pattern 2: Chapter/Section labels
+        chapter = re.match(r"^(Chapter|Section|Appendix)\s+([A-Za-z0-9]+)[\.:]?\s+(.{3,80})",
+                           candidate,
+                           flags=re.IGNORECASE)
+        if chapter:
+            label = chapter.group(1).title()
+            return f"{label} {chapter.group(2)} {chapter.group(3).strip()}"
+
+        # Pattern 3: Boxes (Box A, Box B etc)
+        box = re.match(r"^(Box)\s+([A-Z0-9]+)[\.:]?\s+(.{3,80})", candidate, flags=re.IGNORECASE)
+        if box:
+            return f"{box.group(1).title()} {box.group(2)} {box.group(3).strip()}"
+
+        # Pattern 4: ALL CAPS short headings (<= 10 words)
+        words = candidate.split()
+        if 1 <= len(words) <= 10:
+            letters = [ch for ch in candidate if ch.isalpha()]
+            if letters and sum(ch.isupper() for ch in letters) / len(letters) >= 0.7:
+                return candidate.title()
+
+        return None
+
+    for line in lines[:10]:
+        match = _match_patterns(line)
+        if match:
+            return match.strip()
+
+    # Last resort: try first sentence if it looks like a heading ending with colon
+    sentence_match = re.match(r"^([^\n]{3,80}):\s", head)
+    if sentence_match:
+        candidate = sentence_match.group(1).strip()
+        parsed = _match_patterns(candidate)
+        return parsed or candidate
 
     return None

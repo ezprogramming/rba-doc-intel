@@ -7,7 +7,7 @@
   1. `postgres` (pgvector-enabled) seeded via init script.
   2. `minio` + console, configured with buckets `rba-raw-pdf`, `rba-derived`.
   3. `embedding` – local FastAPI/Text-Embeddings server (CPU torch + sentence-transformers) hosting `nomic-ai/nomic-embed-text-v1.5` on port 8080 with a cached HF volume.
-  4. `app` image built from `Dockerfile` (python:3.11-slim), running `uv sync` on build and mounting repo for live dev; default command `streamlit run app/ui/streamlit_app.py` after `wait_for_services.py` + `bootstrap_db.py`.
+4. `app` image built from `Dockerfile` (python:3.11-slim), running `uv sync` on build and mounting repo for live dev; default command now runs `scripts/wait_for_services.py` before launching Streamlit (database schema comes from `docker/postgres/initdb.d/*.sql`).
 - Add helper script `scripts/wait_for_services.py` consumed by the app container before running migrations or Streamlit.
 
 ## Phase 1 – Core Skeleton
@@ -15,7 +15,7 @@
 - Implement `app/config.py` reading env vars with defaults + validation.
 - Build SQLAlchemy base models (`documents`, `pages`, `chunks`, `chat_sessions`, `chat_messages`) with pgvector column types in `app/db/models.py`; create session factory in `app/db/session.py`.
 - Add MinIO storage adapter (`app/storage/base.py`, `minio_s3.py`) handling streaming upload/download/bucket ensure.
-- Provide Alembic migrations or custom bootstrap script to create tables; wire into docker app entrypoint.
+- Ship schema migrations under `docker/postgres/initdb.d/*.sql` so Postgres initializes itself on first boot.
 
 ## Phase 2 – Ingestion & Processing Pipelines
 - `scripts/crawler_rba.py`: crawl official SMP/FSR listings via `requests` + `BeautifulSoup`, dedupe via Postgres, store PDFs in MinIO (`raw/<doc_type>/filename.pdf`), mark `documents.status=NEW`. Allow optional `CRAWLER_YEAR_FILTER` env var so engineers can limit work to specific years during debugging.
@@ -29,6 +29,7 @@
 - `app/embeddings/indexer.py`: find chunks missing embeddings, batch call client, persist vectors.
 - `scripts/build_embeddings.py`: CLI entry to run indexer; integrate into docker workflow (`docker compose run app uv run scripts/build_embeddings.py`).
 - `app/rag/retriever.py`: similarity search via SQL query (pgvector `cosine_distance`) with filters (doc_type/date).
+- Persist `chunks.text_tsv` with a trigger so lexical search doesn't rebuild vectors on the fly; hybrid retrieval should weight semantic vs lexical scores (~0.7/0.3) per Pinecone/Cohere guidance.
 - `app/rag/llm_client.py`: generic chat/complete wrapper.
 - `app/rag/pipeline.py`: `answer_query(query, session_id=None)` retrieving context, building prompt, calling LLM, persisting chat messages, returning `{answer, evidence[], analysis}`.
 

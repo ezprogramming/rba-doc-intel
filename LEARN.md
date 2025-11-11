@@ -1,776 +1,247 @@
-# RBA RAG Platform: Complete Learning Guide
+# RBA Document Intelligence – Code Walkthrough
 
-> **Comprehensive line-by-line explanation of the ML engineering implementation**
-> This document explains WHY every architectural decision was made, HOW each component works, and WHAT results you can expect.
+This doc explains the repository file-by-file and, for the core modules, line-by-line. Use it to quickly understand how data flows from PDFs to the Streamlit UI.
 
----
-
-## Table of Contents
-
-1. [Architecture Overview](#architecture-overview)
-2. [Performance Infrastructure](#performance-infrastructure)
-3. [Quality Improvements](#quality-improvements)
-4. [ML Engineering Layer](#ml-engineering-layer)
-5. [Production Best Practices](#production-best-practices)
+> **Notation** – References follow `path:line-start–line-end`. Use `nl -ba <file>` to display exact line numbers locally.
 
 ---
 
-## Architecture Overview
+## 1. Configuration Bootstrap
 
-### The Big Picture: Why This Design?
+### `app/config.py:1–74`
 
-```
-┌─────────────┐
-│  RBA PDFs   │  Raw input: SMP, FSR, Annual Reports
-└──────┬──────┘
-       │
-       ▼
-┌─────────────────────────────────────────────────┐
-│     INGESTION PIPELINE (Parallel Workers)       │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
-│  │  Worker1 │  │  Worker2 │  │  Worker3 │  4x  │
-│  └──────────┘  └──────────┘  └──────────┘      │
-└──────────┬──────────────────────────────────────┘
-           │
-           ▼
-┌─────────────────────────────────────────────────┐
-│         STORAGE LAYER (PostgreSQL + MinIO)      │
-│  ┌─────────────┐  ┌─────────────┐              │
-│  │  Documents  │  │   Raw PDFs  │              │
-│  │    Pages    │  │  (MinIO S3) │              │
-│  │   Chunks    │  │             │              │
-│  │   Tables    │  │             │              │
-│  └─────────────┘  └─────────────┘              │
-└──────────┬──────────────────────────────────────┘
-           │
-           ▼
-┌─────────────────────────────────────────────────┐
-│   EMBEDDING PIPELINE (GPU-Accelerated)          │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐      │
-│  │  Batch1  │  │  Batch2  │  │  Batch3  │  12x │
-│  │  (32x)   │  │  (32x)   │  │  (32x)   │      │
-│  └──────────┘  └──────────┘  └──────────┘      │
-│         ▲                                        │
-│         │ M4 MPS or NVIDIA GPU                  │
-│  ┌──────────────────────┐                       │
-│  │ nomic-embed-text-v1.5│  768-dim vectors     │
-│  └──────────────────────┘                       │
-└──────────┬──────────────────────────────────────┘
-           │
-           ▼
-┌─────────────────────────────────────────────────┐
-│       RETRIEVAL (Hybrid + Reranking)            │
-│  ┌─────────────────────────────────┐            │
-│  │  Step 1: Hybrid Search (top 20) │            │
-│  │  - 70% Vector (cosine)          │            │
-│  │  - 30% Full-text (BM25)         │            │
-│  └──────────┬──────────────────────┘            │
-│             │                                     │
-│  ┌──────────▼──────────────────────┐            │
-│  │  Step 2: Rerank (top 5)         │            │
-│  │  - Cross-encoder scoring        │            │
-│  └──────────┬──────────────────────┘            │
-└─────────────┼────────────────────────────────────┘
-              │
-              ▼
-┌─────────────────────────────────────────────────┐
-│           GENERATION (qwen2.5:7b)                │
-│  Context + Query → LLM → Answer + Evidence      │
-└──────────┬──────────────────────────────────────┘
-           │
-           ▼
-┌─────────────────────────────────────────────────┐
-│    ML ENGINEERING (Evaluation & Feedback)        │
-│  ┌────────────┐  ┌────────────┐  ┌───────────┐ │
-│  │ Offline    │  │  Online    │  │ Fine-tune │ │
-│  │ Eval       │  │  Feedback  │  │ (LoRA)    │ │
-│  └────────────┘  └────────────┘  └───────────┘ │
-└─────────────────────────────────────────────────┘
-```
+| Lines | Purpose |
+|-------|---------|
+| 1–11  | Imports + `lru_cache` so settings load once per process. |
+| 14–47 | `Settings` dataclass declares every env var (DB URLs, MinIO, embedding + LLM endpoints, batch sizes). |
+| 50–74 | `get_settings()` returns the cached instance; every other module calls this instead of touching `os.environ` directly. |
 
-**Key Design Decisions:**
+**Key idea:** All scripts/servers read configuration from one typed object which makes environment debugging straightforward.
 
-1. **Why PostgreSQL + pgvector?**
-   - Single source of truth (no sync issues between vector DB and metadata DB)
-   - ACID transactions (critical for production reliability)
-   - Native full-text search (enables hybrid retrieval)
-   - Cost-effective at scale <10M chunks
+## 1b. Database Bootstrap (`docker/postgres/initdb.d`)
 
-2. **Why parallel processing?**
-   - PDF processing is I/O-bound (downloading, file reading)
-   - GPU embedding is underutilized in sequential mode
-   - 4 workers give 3-4x speedup without overloading DB
+| File | Lines | Purpose |
+|------|-------|---------|
+| `00_extensions.sql` | 1–2 | Installs `pgcrypto` (UUIDs) + `pgvector` so we can create vector columns without extra migrations. |
+| `01_create_tables.sql` | 1–120 | Declares every table (`documents`, `pages`, `chunks`, `chat_*`, `feedback`, `tables`, `eval_*`). Note: `chunks.embedding` is `VECTOR(768)` and `section_hint`/`text_tsv` columns live here so ORM + SQL stay aligned. |
+| `02_create_indexes.sql` | 1–130 | Builds HNSW vector index, composite document indexes, **materializes `text_tsv`**, adds a trigger to keep it updated, and analyzes stats. |
 
-3. **Why hybrid retrieval?**
-   - Vector search: good for semantic/paraphrase matching
-   - Full-text search: good for exact keywords, dates, entity names
-   - Combined: 20-30% better recall than either alone
+Because these run via the official Postgres entrypoint, `docker compose up` on a clean volume always yields the same schema without invoking Python migrations.
 
 ---
 
-## Performance Infrastructure
+## 2. Database Models
 
-### 1. Vector Indexes (10-100x Query Speedup)
+### `app/db/models.py`
 
-**File:** `docker/postgres/initdb.d/02_create_indexes.sql`
+- `Document` (lines ~23–70): stores source metadata and ingestion status.
+- `Page` (70–97): raw + cleaned text per PDF page.
+- `Chunk` (97–131): the heart of retrieval – includes `embedding VECTOR(768)` and the new `section_hint` string.
+  - Lines 112–116 add `text_tsv` so lexical search reads the persisted tsvector instead of recomputing it. The trigger from `02_create_indexes.sql` keeps it fresh whenever chunk text changes.
+- `ChatSession`/`ChatMessage` (131–168): conversation persistence.
+- `Feedback` (not shown here but imported in UI) links thumbs-up/down to chat messages.
 
-```sql
--- HNSW index for approximate nearest neighbor search
-CREATE INDEX idx_chunks_embedding_hnsw
-ON chunks USING hnsw (embedding vector_cosine_ops);
-```
-
-**What it does:**
-- Creates a hierarchical graph index for fast similarity search
-- Trades small accuracy loss (<5%) for massive speed gain
-
-**Why HNSW over IVFFlat?**
-- HNSW: Slower build, faster queries, better recall
-- IVFFlat: Faster build, slower queries, lower recall
-- For production RAG: query speed > build speed
-
-**How it works:**
-```
-Without index:
-- Query: "What is inflation forecast?"
-- Scan ALL 100,000 chunks comparing cosine similarity
-- Time: ~1000ms
-
-With HNSW index:
-- Navigate graph structure (similar to binary search tree)
-- Check only ~1000 candidates
-- Time: ~45ms (20x faster)
-```
-
-**Line-by-line explanation:**
-
-```sql
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chunks_embedding_hnsw
-```
-- `CONCURRENTLY`: Build index without locking table (production-safe)
-- `IF NOT EXISTS`: Idempotent (safe to re-run)
-- `idx_chunks_embedding_hnsw`: Descriptive naming convention
-
-```sql
-ON chunks USING hnsw (embedding vector_cosine_ops);
-```
-- `USING hnsw`: Specify index algorithm (hierarchical navigable small world)
-- `vector_cosine_ops`: Use cosine distance (best for normalized embeddings)
-- Alternative: `vector_l2_ops` for Euclidean distance
-
-**Result:** Similarity search goes from 1000ms → 45ms
+**Why this matters:** chunk metadata (page ranges, section hints) flows straight to the UI as evidence.
 
 ---
 
-### 2. GPU Acceleration (10-50x Embedding Speedup)
+## 3. Text Extraction & Chunking
 
-**File:** `docker/embedding/app.py`
+### Pipeline overview (`scripts/process_pdfs.py`)
 
-```python
-def get_device() -> str:
-    """Auto-detect best available device for inference."""
-    if torch.cuda.is_available():
-        device = "cuda"
-        gpu_name = torch.cuda.get_device_name(0)
-        logger.info(f"Using NVIDIA GPU: {gpu_name}")
-    elif torch.backends.mps.is_available():
-        device = "mps"
-        logger.info("Using Apple Silicon GPU (Metal Performance Shaders)")
-    else:
-        device = "cpu"
-        logger.warning("No GPU detected, using CPU (this will be slower)")
-    return device
-```
+1. `process_document()` downloads a PDF from MinIO, extracts pages (`parser.extract_pages`), and cleans each page with `clean_text()`.
+2. `_persist_pages()` stores raw + cleaned versions for auditing.
+3. `chunk_pages()` splits the concatenated text (details below).
+4. `_persist_chunks()` saves each chunk + section hint to Postgres (`ChunkModel`).
 
-**What it does:**
-- Auto-detects GPU type (NVIDIA CUDA or Apple MPS)
-- Falls back gracefully to CPU if no GPU available
+### Cleaner (`app/pdf/cleaner.py:10–33`)
 
-**Why this order (CUDA > MPS > CPU)?**
-- CUDA: Fastest (20-50x vs CPU), but only on NVIDIA GPUs
-- MPS: Medium (10-15x vs CPU), Apple Silicon only
-- CPU: Slowest, universal fallback
+- Removes headers via `HEADER_RE` (line 7).
+- Keeps paragraph breaks (`\n\n`) by grouping non-empty lines into paragraphs.
+- Returns joined paragraphs separated by blank lines so chunker can detect them.
 
-**Line-by-line explanation:**
+### Chunker (`app/pdf/chunker.py:1–164`)
 
-```python
-if torch.cuda.is_available():
-```
-- PyTorch check: Is CUDA runtime installed and GPU detected?
-- Returns False on Mac (no NVIDIA support)
+| Lines | Explanation |
+|-------|-------------|
+| 1–23  | Config: `max_tokens=768`, `overlap_pct=0.15`, `Chunk` dataclass carries `section_hint`. |
+| 42–55 | Walks pages, builds `page_boundaries` so we can map char offsets back to page numbers. |
+| 56–95 | Sliding window over the entire document text: tries to end a chunk at paragraph break (`\n\n`), sentence break (`. ` / `.\n`), then fallback to spaces/characters. |
+| 104–118 | `_extract_section_hint()` inspects the opening lines for enumerated headings (`3.2`, `2.3.1`), named sections (“Chapter 3”), or uppercase headings and boxes. |
+| 119–135 | Implements overlap by reusing the trailing tokens from the previous chunk. |
+| 140–164 | Additional heuristics convert uppercase headings to title case and catch colon-separated titles. |
 
-```python
-elif torch.backends.mps.is_available():
-```
-- PyTorch check: Is Metal Performance Shaders available?
-- True on M1/M2/M3/M4 Macs, False elsewhere
+**Why line 68 matters:** `target_chars = max_tokens * 4.5` approximates tokens→characters so we avoid expensive tokenizer passes during ingestion.
 
-```python
-model = SentenceTransformer(MODEL_ID, device=DEVICE, trust_remote_code=True)
-```
-- Load embedding model to detected device
-- `trust_remote_code=True`: Allow custom model code (required for nomic-embed)
-- Model automatically uses GPU if device="cuda" or device="mps"
+### Embedding Indexer (`app/embeddings/indexer.py:1–52`)
 
-**Embedding generation:**
+- Lines 15–31: `generate_missing_embeddings()` pulls up to `batch_size` chunks with `embedding IS NULL`, defaulting to the `EMBEDDING_BATCH_SIZE` env var.
+- Lines 33–39: Calls the HTTP embedding service once per batch and writes vectors back to each `Chunk` row.
+- Lines 41–50: For every document touched in the batch, re-counts remaining NULL embeddings; when zero, the document gets promoted to `DocumentStatus.EMBEDDED`.
 
-```python
-vectors = model.encode(
-    payload.input,
-    batch_size=BATCH_SIZE,
-    convert_to_numpy=True,
-    normalize_embeddings=True,  # ← Key addition
-    show_progress_bar=False
-)
-```
+### Embedding CLI (`scripts/build_embeddings.py`)
 
-**Line-by-line:**
-- `batch_size=BATCH_SIZE`: Process 32 texts at once (GPU parallelism)
-- `convert_to_numpy=True`: Return numpy arrays (faster than PyTorch tensors for storage)
-- `normalize_embeddings=True`: L2 normalization for cosine similarity
-  - Why? Cosine similarity = dot product of normalized vectors
-  - Without normalization: must compute `a·b / (||a|| × ||b||)` (slower)
-  - With normalization: just `a·b` (4x faster queries)
-
-**Result:** Embedding generation goes from 50/sec → 600/sec on M4
+| Lines | Highlights |
+|-------|-----------|
+| 35–57 | `embed_single_batch()` is the worker function the thread pool executes; all logging includes the batch ID. |
+| 60–82 | `reset_embeddings()` optionally nulls vectors (entire corpus or specific document IDs) and downgrades every affected document back to `CHUNKS_BUILT`. |
+| 84–183 | `main()` wires up logging, optional reset, then spins up `parallel_batches` workers until no chunks remain. Each loop sleeps 0.2 s so Postgres + the embedding API aren’t hammered. |
+| 185–205 | CLI arguments (`--reset`, repeated `--document-id`) map directly to the function parameters; use these instead of manual SQL when re-chunking. |
 
 ---
 
-### 3. Parallel Batch Processing (3-4x Throughput)
+## 4. Hybrid Retrieval
 
-**File:** `scripts/process_pdfs.py`
+### `app/rag/retriever.py`
 
-```python
-with ThreadPoolExecutor(max_workers=max_workers) as executor:
-    # Submit all document processing tasks to thread pool
-    future_to_doc_id = {
-        executor.submit(process_document, doc_id, storage): doc_id
-        for doc_id in document_ids
-    }
+#### Semantic + Lexical fusion (lines ~60–205)
 
-    # Wait for tasks to complete and handle results
-    for future in as_completed(future_to_doc_id):
-        doc_id = future_to_doc_id[future]
-        try:
-            future.result()
-            total_processed += 1
-        except Exception as exc:
-            total_failed += 1
-            logger.error(f"Failed {doc_id}: {exc}")
-```
+1. Build a vector query: `Chunk.embedding.cosine_distance(query_embedding)` (line 85). Fetch `limit * 2` rows so deduplication has slack.
+2. Build a lexical query: `ts_rank_cd(Chunk.text_tsv, websearch_to_tsquery(query_text))` (line 120). Same fetch size because `text_tsv` is precomputed by the trigger from `02_create_indexes.sql`.
+3. Merge by `chunk_id`; each entry carries `semantic` and `lexical` scores (lines 140–170).
+4. Normalize (`semantic_max`, `lexical_max`) and weight by constants (`SEMANTIC_WEIGHT = 0.7`, `LEXICAL_WEIGHT = 0.3`).
+5. Convert to `RetrievedChunk` objects, keeping `section_hint` so evidence shows headings.
 
-**What it does:**
-- Processes multiple PDFs concurrently using thread pool
-- Each worker runs independently
-
-**Why ThreadPoolExecutor vs ProcessPoolExecutor?**
-- PDF processing is I/O-bound (downloading from MinIO, reading files)
-- Threads share memory (lower overhead than processes)
-- GIL doesn't matter because most time spent in I/O waits
-- ProcessPoolExecutor only helps for CPU-bound tasks
-
-**Line-by-line explanation:**
+#### Deterministic ordering (lines 205–214)
 
 ```python
-with ThreadPoolExecutor(max_workers=max_workers) as executor:
+results.sort(key=lambda chunk: (-chunk.score, chunk.chunk_id))
 ```
-- `with` statement: Auto-cleanup when done (shuts down threads)
-- `max_workers=4`: Spawn 4 worker threads
-- Why 4? Sweet spot for I/O-bound tasks (2-8 is typical range)
 
-```python
-future_to_doc_id = {
-    executor.submit(process_document, doc_id, storage): doc_id
-    for doc_id in document_ids
-}
-```
-- `executor.submit()`: Schedule `process_document()` to run in thread pool
-- Returns `Future` object (promise of result)
-- Dict comprehension creates mapping: Future → document_id (for tracking)
+This guarantees stable output ordering even when multiple chunks share identical fused scores.
 
-```python
-for future in as_completed(future_to_doc_id):
-```
-- `as_completed()`: Yields futures as they finish (not submission order)
-- Why? Get results ASAP instead of waiting for slowest task
+#### (Optional) Reranking (lines 214–310)
 
-```python
-future.result()
-```
-- Blocks until future completes
-- Re-raises any exception from worker thread
-- Returns function's return value (None in this case)
-
-**Why this pattern is production-ready:**
-1. Errors don't crash entire batch (try/except per task)
-2. Failed documents logged but processing continues
-3. Thread pool auto-manages worker lifecycle
-4. Memory-efficient (doesn't load all PDFs at once)
-
-**Result:** PDF processing goes from 1/min → 4/min
+Stub that can re-score candidates with a cross-encoder when needed. Disabled by default but the structure is ready.
 
 ---
 
-## Quality Improvements
+## 5. RAG Pipeline
 
-### 4. Enhanced Header/Footer Removal (40-60% Cleaner Text)
+### `app/rag/pipeline.py`
 
-**File:** `app/pdf/cleaner.py`
-
-**Two-stage approach:**
-
-**Stage 1: Pattern-based detection (regex)**
-
-```python
-HEADER_PATTERNS = [
-    # Pattern: "34    Reserve Bank of Australia"
-    re.compile(r"^\s*\d+\s+Reserve Bank of Australia\s*$", re.IGNORECASE),
-
-    # Pattern: "Page 12" or "Page 12 of 45"
-    re.compile(r"^\s*Page\s+\d+(\s+of\s+\d+)?\s*$", re.IGNORECASE),
-
-    # ... more patterns
-]
-```
-
-**Line-by-line explanation:**
-
-```python
-re.compile(r"^\s*\d+\s+Reserve Bank of Australia\s*$", re.IGNORECASE)
-```
-- `^`: Start of line
-- `\s*`: Zero or more whitespace chars
-- `\d+`: One or more digits (page number)
-- `\s+`: One or more spaces
-- `Reserve Bank of Australia`: Literal text
-- `\s*$`: Optional trailing whitespace, then end of line
-- `re.IGNORECASE`: Match "reserve bank" or "RESERVE BANK"
-
-**Why regex for headers?**
-- Fast (compiled regex is very efficient)
-- Catches known patterns reliably
-- No false positives if patterns are specific
-
-**Stage 2: Frequency-based detection**
-
-```python
-def detect_repeating_headers_footers(pages: List[str]) -> Tuple[Set[str], Set[str]]:
-    """Detect headers and footers that repeat across 80%+ of pages."""
-    line_counts = defaultdict(int)
-    total_pages = len(pages)
-
-    for page in pages:
-        lines = [line.strip() for line in page.strip().split('\n') if line.strip()]
-
-        # Check first 3 lines for headers
-        for line in lines[:3]:
-            line_counts[('header', line)] += 1
-
-        # Check last 3 lines for footers
-        for line in lines[-3:]:
-            line_counts[('footer', line)] += 1
-
-    # Lines appearing in 80%+ of pages are repeating headers/footers
-    threshold = total_pages * 0.8
-    headers = {line for (typ, line), count in line_counts.items()
-               if typ == 'header' and count >= threshold}
-    footers = {line for (typ, line), count in line_counts.items()
-               if typ == 'footer' and count >= threshold}
-
-    return headers, footers
-```
-
-**What it does:**
-- Counts how often each line appears in first 3 / last 3 lines of pages
-- If a line appears in 80%+ of pages, it's a header/footer
-
-**Why this works:**
-- Real content varies across pages
-- Headers/footers are consistent
-- Example: "Statement on Monetary Policy" appears in header of all 50 pages → detected
-
-**Line-by-line explanation:**
-
-```python
-line_counts = defaultdict(int)
-```
-- `defaultdict(int)`: Auto-initializes missing keys to 0
-- Cleaner than `if key not in dict: dict[key] = 0`
-
-```python
-for line in lines[:3]:
-    line_counts[('header', line)] += 1
-```
-- `lines[:3]`: First 3 lines (Python slice)
-- `('header', line)`: Tuple key (type, text)
-- `+= 1`: Increment count
-
-```python
-threshold = total_pages * 0.8
-```
-- 80% threshold: Balance between catching headers and avoiding false positives
-- Too low (50%): May catch non-header lines that happen to repeat
-- Too high (95%): May miss headers if some pages are formatted differently
-
-**Result:** Text cleanliness goes from 70% → 95%
+| Lines | Explanation |
+|-------|-------------|
+| 23–36 | `SYSTEM_PROMPT` defines analyst persona: cite docs, include numbers, state gaps. |
+| 39–44 | `_format_context()` packages chunks as `[doc_type] Title (pages x-y)` + text. |
+| 57–104 | `answer_query()` orchestrates everything:
+  1. Embed question (`EmbeddingClient`).
+  2. Retrieve chunks (`retrieve_similar_chunks`) with `top_k=2` to stay within LLM context limits.
+  3. Compose user message (`Question + Context`).
+  4. Call LLM client; if `stream_handler` is provided, uses streaming path (see next section).
+  5. Save user + assistant messages to Postgres so the UI can display history/feedback.
+  6. Return `AnswerResponse` containing text + evidence array.
 
 ---
 
-### 5. Table Extraction (5% → 80% Structure Preservation)
+## 6. LLM Client
 
-**File:** `app/pdf/table_extractor.py`
+### `app/rag/llm_client.py:12–66`
 
-```python
-def extract_tables(self, pdf_path: Path, page_num: int) -> List[Dict[str, Any]]:
-    """Extract structured tables from a specific PDF page."""
-    tables = camelot.read_pdf(
-        str(pdf_path),
-        pages=str(page_num),
-        flavor='lattice',  # Use gridline detection
-        suppress_stdout=True
-    )
+1. `_build_payload()` (lines 19–33) joins system prompt + messages into the format Ollama expects.
+2. `complete()` (lines 34–44) performs a blocking HTTP POST with `stream=False` (used by scripts/tests).
+3. `stream()` (lines 46–66) sends `stream=True` and iterates over `iter_lines()`. Each JSON chunk is parsed, tokens are passed to `on_token`, and appended to `final_text`.
 
-    extracted = []
-    for table in tables:
-        if table.accuracy < self.min_accuracy:
-            continue  # Skip low-confidence detections
-
-        extracted.append({
-            "accuracy": float(table.accuracy),
-            "data": table.df.to_dict('records'),  # List of row dicts
-            "bbox": list(table._bbox),
-        })
-
-    return extracted
-```
-
-**What it does:**
-- Uses Camelot library to detect tables via image processing
-- Converts tables to structured JSON (list of row dictionaries)
-
-**How Camelot works:**
-1. Convert PDF page to image
-2. Detect gridlines and text regions
-3. Infer table structure from spatial layout
-4. Return pandas DataFrame
-
-**Line-by-line explanation:**
-
-```python
-flavor='lattice'
-```
-- Camelot has two modes:
-  - `lattice`: For tables with gridlines (RBA reports) – more accurate
-  - `stream`: For borderless tables – less reliable
-- RBA tables have clear grids → use lattice
-
-```python
-if table.accuracy < self.min_accuracy:
-```
-- `table.accuracy`: Camelot confidence score (0-100)
-- Typical good tables: 80-100
-- Typical false positives: 30-60
-- `min_accuracy=70`: Good balance
-
-```python
-table.df.to_dict('records')
-```
-- `table.df`: pandas DataFrame (rows × columns)
-- `to_dict('records')`: Convert to list of row dicts
-- Example:
-  ```python
-  # DataFrame:
-  #   Year | GDP  | Inflation
-  #   2024 | 2.1% | 3.5%
-  #   2025 | 2.5% | 2.8%
-
-  # Becomes:
-  [
-      {"Year": "2024", "GDP": "2.1%", "Inflation": "3.5%"},
-      {"Year": "2025", "GDP": "2.5%", "Inflation": "2.8%"}
-  ]
-  ```
-
-**Why this format?**
-- Easy to store in PostgreSQL JSON column
-- Easy to query: "What is 2025 GDP forecast?" → filter by Year=2025
-- Preserves structure (unlike plain text extraction)
-
-**Result:** Table data preservation goes from 5% → 80%
+**Why 240s timeout?** CPU-only Ollama can take a minute+ per answer; the generous timeout prevents spurious failures.
 
 ---
 
-## ML Engineering Layer
+## 7. Streamlit UI & Feedback Loop
 
-### 6. Evaluation Framework
+### `app/ui/streamlit_app.py`
 
-**Files:**
-- `app/db/models.py` (EvalExample, EvalRun, EvalResult)
-- `app/rag/eval.py` (evaluation logic)
-- `scripts/run_eval.py` (CLI)
+1. **Session state** (lines 32–57): stores `chat_session_id`, `history` (`[{question, answer, evidence, pending, message_id, error}]`), and `feedback_state`.
+2. **`render_history()`** (lines ~70–150):
+   - Prints each Q/A pair; pending entries show a “(generating…)” suffix.
+   - Evidence expander shows `doc_type`, title, section hint, and page range.
+   - Thumbs buttons are disabled until the response has a `message_id`. Clicking a button calls `store_feedback()` and updates local state.
+3. **`store_feedback()`** (lines 59–108): wraps DB access with `session_scope()`; updates existing feedback or inserts new `Feedback` row.
+4. **`handle_submit()`** (lines 157–236):
+   - Validates input and appends a “pending” entry to history.
+   - Streams tokens via `answer_query(..., stream_handler=on_token)` into that entry.
+   - On completion, fetches the latest assistant `ChatMessage` to get `message_id` for future feedback.
+   - Errors are captured in `entry["error"]` so the UI can display them.
+5. **`main()`** (lines 238–254): renders the textarea form and the history list.
 
-**Database Schema:**
-
-```python
-class EvalExample(Base):
-    """Golden test case."""
-    id = Column(Integer, primary_key=True)
-    query = Column(Text, nullable=False)
-    expected_keywords = Column(JSON, nullable=True)
-    category = Column(String, nullable=True)
-```
-
-**Why golden examples?**
-- Consistent benchmark across model changes
-- Catch regressions before deployment
-- Measure improvement from fine-tuning
-
-**Evaluation metrics:**
-
-```python
-def compute_keyword_match(answer: str, expected_keywords: List[str]) -> float:
-    """Fraction of expected keywords present in answer."""
-    if not expected_keywords:
-        return 1.0
-    answer_lower = answer.lower()
-    matched = sum(1 for kw in expected_keywords if kw.lower() in answer_lower)
-    return matched / len(expected_keywords)
-```
-
-**Why keyword matching?**
-- Simpler than ROUGE/BLEU (no reference answer needed)
-- Good enough for factual questions
-- Example: Query "What is inflation target?" → must contain ["2-3", "percent"]
-
-**Line-by-line explanation:**
-
-```python
-answer_lower = answer.lower()
-```
-- Case-insensitive matching (handles "2-3 Percent" or "2-3 percent")
-
-```python
-matched = sum(1 for kw in expected_keywords if kw.lower() in answer_lower)
-```
-- Generator expression with `sum()`
-- `1` for each keyword found, `0` otherwise
-- `sum()` totals the 1s
-
-**Result:** Automated quality measurement (pass/fail criteria)
+**Feedback persistence path:** UI → `store_feedback()` → `Feedback` table (with optional comment, currently unused). Tests cover update vs insert.
 
 ---
 
-### 7. Safety Guardrails (Production-Ready)
+## 8. Embedding & LLM Services
 
-**File:** `app/rag/safety.py`
+### `docker-compose.yml`
 
-```python
-class SafetyGuardrails:
-    # PII patterns (Australian context)
-    PII_PATTERNS = {
-        "email": re.compile(r'\b[\w.+-]+@[\w-]+\.[\w.-]+\b'),
-        "phone": re.compile(r'\b(?:\+61|0)[2-478]\d{8}\b'),
-        "tfn": re.compile(r'\b\d{3}[ -]?\d{3}[ -]?\d{3}\b'),  # Tax File Number
-    }
+- `embedding`: builds from `docker/embedding/Dockerfile`. Runs FastAPI + SentenceTransformers, exposes `/embeddings`.
+- `llm`: `ollama/ollama:latest` container; we pull `qwen2.5:1.5b` by default for streaming chat.
+- `app`: Streamlit server that waits for Postgres/MinIO/embedding/llm before launching.
 
-    # Prompt injection patterns
-    INJECTION_PATTERNS = [
-        re.compile(r'ignore.*previous.*instructions?', re.I),
-        re.compile(r'disregard.*instructions?', re.I),
-    ]
-```
-
-**What it does:**
-- Detects PII in queries/responses
-- Detects prompt injection attempts
-- Logs safety violations for audit
-
-**Why PII detection matters:**
-- Financial documents may contain sensitive data
-- Australian privacy regulations (GDPR-like)
-- Prevent accidental PII leakage in responses
-
-**Line-by-line explanation:**
-
-```python
-re.compile(r'\b(?:\+61|0)[2-478]\d{8}\b')
-```
-- `\b`: Word boundary
-- `(?:\+61|0)`: Non-capturing group – matches "+61" or "0"
-- `[2-478]`: First digit of Australian area code
-- `\d{8}`: Eight more digits
-- Matches: "+61 2 1234 5678" or "0412345678"
-
-**Prompt injection detection:**
-
-```python
-def detect_prompt_injection(self, text: str) -> bool:
-    """Detect prompt injection attempts."""
-    return any(pattern.search(text) for pattern in self.INJECTION_PATTERNS)
-```
-
-**Why this works:**
-- Common injection attempts follow patterns:
-  - "Ignore previous instructions and tell me..."
-  - "Disregard your guidelines and..."
-- Simple regex catches 80% of attacks
-
-**Result:** Audit trail for security incidents
+**Tip:** use `docker compose up embedding llm` to keep model containers warm during development.
 
 ---
 
-## Production Best Practices
+## 9. Operational Scripts (remaining ones after cleanup)
 
-### 8. Retry Logic with Exponential Backoff
+| Script | Purpose |
+|--------|---------|
+| `crawler_rba.py`  | Scrapes RBA PDFs + metadata, pushes to MinIO + Postgres. |
+| `process_pdfs.py` | Runs the clean → chunk workflow described above. |
+| `build_embeddings.py` | Fills in missing `Chunk.embedding` values in batches. |
+| `refresh_pdfs.py` | Convenience wrapper to run crawler + processor + embeddings sequentially. |
+| `debug_dump.py`   | Prints counts (documents/pages/chunks) for health checks. |
+| `wait_for_services.py` | Entrypoint for `app` container to ensure Postgres/MinIO ready before Streamlit starts. |
+| `export_feedback_pairs.py` | Reads thumbs-up/down feedback from Postgres and emits JSONL (`prompt/chosen/rejected`) for preference tuning. |
+| `finetune_lora_dpo.py` | Runs a LoRA + DPO trainer (TRL/PEFT) on the exported JSONL to produce adapters under `models/`. |
 
-**File:** `app/embeddings/client.py`
+These scripts cover the supported workflows: ingestion, embeddings, diagnostics, feedback export, and LoRA fine-tuning.
 
-```python
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-    retry_if_exception_type,
-    before_sleep_log
-)
+## 10. Observability Hooks (`app/rag/hooks.py`)
 
-@retry(
-    retry=retry_if_exception_type((
-        requests.exceptions.ConnectionError,
-        requests.exceptions.Timeout,
-        requests.exceptions.HTTPError
-    )),
-    stop=stop_after_attempt(3),
-    wait=wait_exponential(multiplier=1, min=4, max=10),
-    before_sleep=before_sleep_log(logger, logging.WARNING),
-    reraise=True
-)
-def embed(self, texts: List[str]) -> EmbeddingResponse:
-    # ... embedding logic
-```
+- `HookBus` is a zero-dependency pub/sub helper. Use `hooks.subscribe(event, handler)` or `hooks.subscribe_all(handler)` to tap into lifecycle events.
+- `answer_query()` emits: `rag:query_started`, `rag:retrieval_complete`, `rag:stream_chunk`, `rag:answer_completed`.
+- Streamlit emits: `ui:question_submitted`, `ui:answer_rendered`, `ui:message_committed`, `ui:feedback_recorded`.
+- Default debug logging subscriber is registered so setting `LOG_LEVEL=DEBUG` prints every event.
 
-**What it does:**
-- Retries failed requests up to 3 times
-- Waits with exponential backoff between retries
-- Logs warnings before each retry
+### Feedback Export (`scripts/export_feedback_pairs.py:1–120`)
 
-**Why exponential backoff?**
-- Constant retry: May overwhelm recovering service
-- Exponential: Gives service time to recover
-- Example wait times: 4s, 8s, 10s (capped at max=10)
+- Lines 23–52: `_resolve_prompt()` walks backward from an assistant reply to find the most recent user prompt in the same session.
+- Lines 55–86: `collect_feedback_pairs()` joins `chat_messages` and `feedback`, buckets positive vs negative answers per prompt.
+- Lines 89–113: `export_jsonl()` writes capped pairs per prompt (`--max-pairs-per-prompt`) in the TRL-friendly `{prompt, chosen, rejected}` format.
 
-**Line-by-line explanation:**
+### Lightweight Fine-tuning (`scripts/finetune_lora_dpo.py:1–130`)
 
-```python
-retry_if_exception_type((ConnectionError, Timeout, HTTPError))
-```
-- Only retry on transient errors (network issues, timeouts)
-- Don't retry on permanent errors (400 Bad Request, etc.)
-
-```python
-stop_after_attempt(3)
-```
-- Try up to 3 times total (1 original + 2 retries)
-- Why 3? Good balance between resilience and latency
-
-```python
-wait_exponential(multiplier=1, min=4, max=10)
-```
-- Wait time = `multiplier * 2^attempt`
-- Attempt 1: min(1 * 2^1, 10) = min(2, 10) = 4 (use min=4)
-- Attempt 2: min(1 * 2^2, 10) = min(4, 10) = 4
-- Attempt 3: min(1 * 2^3, 10) = min(8, 10) = 8
-- Capped at max=10 seconds
-
-**Result:** 90%+ reduction in transient failures
+- Lines 22–38: CLI arguments let you set dataset path, output dir, base model, and hyperparameters without editing code.
+- Lines 40–74: `load_model_and_tokenizer()` loads the base LLM, applies LoRA adapters to attention matrices, and auto-detects CUDA vs MPS vs CPU.
+- Lines 78–108: `training_args` + `DPOTrainer` hook up the preference dataset, streaming logs every five steps; defaults fit on a single M-series Mac.
+- Lines 110–118: `trainer.train()` then persists both adapter weights and tokenizer under `models/<name>` so you can later merge/evaluate.
 
 ---
 
-## Summary: What You've Learned
+## 11. Testing Strategy
 
-### Performance Infrastructure (10-100x Speedup)
-✅ Vector indexes (HNSW vs IVFFlat trade-offs)
-✅ GPU acceleration (CUDA > MPS > CPU detection)
-✅ Parallel batch processing (ThreadPoolExecutor for I/O-bound tasks)
-✅ L2 normalization for embeddings (faster cosine similarity)
+- `tests/pdf/test_cleaner.py`: ensures blank lines are preserved and headers removed.
+- `tests/rag/test_pipeline.py`: verifies `_compose_analysis()` mentions the right title/pages.
+- `tests/ui/test_feedback.py`: unit tests `store_feedback()` for both update and insert flows using a dummy session.
 
-### Quality Improvements (+30% Answer Quality)
-✅ Hybrid retrieval (semantic + lexical)
-✅ Enhanced header/footer removal (pattern + frequency detection)
-✅ Table extraction (Camelot for structured data)
-✅ Better LLM (qwen2.5:7b vs 1.5b)
+Run the full suite with:
 
-### ML Engineering (Production ML Lifecycle)
-✅ Evaluation framework (golden examples, metrics, runs)
-✅ Safety guardrails (PII detection, prompt injection)
-✅ User feedback collection (thumbs up/down → fine-tuning data)
-✅ Database schema for experiments and tracking
+```bash
+docker compose run --rm app uv run pytest
+```
 
-### Production Best Practices
-✅ Retry logic with exponential backoff
-✅ Comprehensive logging and error handling
-✅ Graceful degradation (CPU fallback if no GPU)
-✅ Idempotent operations (safe to re-run)
+Under heavy development you can run targeted suites:
+
+```bash
+docker compose run --rm app uv run pytest tests/ui/test_feedback.py
+```
+
+This keeps the feedback subsystem verified even if Postgres/MinIO aren’t seeded with data.
 
 ---
 
-## Next Steps
+## Full Data Flow (Cheat Sheet)
 
-1. **Run the system locally:**
-   ```bash
-   # Start with GPU acceleration
-   ./scripts/run_embedding_local_m4.sh
+1. **Ingestion:** `crawler_rba.py` → `process_pdfs.py` → `build_embeddings.py`.
+2. **Query:** Streamlit form → `answer_query()` → hybrid retrieval → LLM streaming → DB persistence.
+3. **Feedback:** User clicks thumb → `store_feedback()` → `feedback` table (used later for evaluation/fine-tuning).
 
-   # Process PDFs in parallel
-   uv run scripts/process_pdfs.py --workers 4
-
-   # Generate embeddings in parallel
-   uv run scripts/build_embeddings.py --parallel 4
-   ```
-
-2. **Add evaluation examples:**
-   ```python
-   # Create golden test cases
-   example = EvalExample(
-       query="What is the RBA's inflation target?",
-       expected_keywords=["2-3", "percent", "medium term"]
-   )
-   ```
-
-3. **Collect user feedback:**
-   - Users click thumbs up/down in Streamlit UI
-   - Feedback → fine-tuning dataset
-   - Iterate and improve
-
-4. **Monitor performance:**
-   - Query latency (<500ms target)
-   - Eval pass rate (>80% target)
-   - User satisfaction (thumbs up rate)
-
----
-
-## Interview Talking Points
-
-> **"I built a production RAG platform with the full ML lifecycle..."**
-
-**Infrastructure:**
-- "GPU acceleration with auto-detection: 10-50x speedup on M4/NVIDIA"
-- "Parallel batch processing: 3-4x PDF throughput"
-- "Vector indexes: Query latency from 1000ms → 45ms"
-
-**Quality:**
-- "Hybrid retrieval (70% semantic + 30% lexical) with reranking"
-- "Table extraction preserves 80% of structure vs 5% in plain text"
-- "Domain-specific cleaning: 40-60% cleaner text for RBA docs"
-
-**ML Engineering:**
-- "Evaluation framework with golden examples and automated metrics"
-- "Online feedback collection feeds DPO/RLHF fine-tuning pipeline"
-- "Safety guardrails for PII and prompt injection"
-
-**Production:**
-- "Retry logic with exponential backoff (90% failure reduction)"
-- "Graceful degradation (GPU → CPU fallback)"
-- "Comprehensive logging and error tracking"
-
-🎯 **Key message:** "This isn't just a demo – it's a production-ready ML platform following industry best practices from companies like Anthropic, OpenAI, and Cohere."
+Keep this doc open alongside the code when stepping through the system; each section points you to the exact file/line block that implements the described behavior.

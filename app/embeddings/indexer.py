@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from typing import Iterable, List
+from typing import List, Set
+from uuid import UUID
 
 from sqlalchemy import select, func
 
@@ -32,11 +33,11 @@ def generate_missing_embeddings(batch_size: int | None = None) -> int:
 
         texts = [chunk.text for chunk in chunks]
         response = client.embed(texts)
-        updated_doc_ids: set[str] = set()
+        updated_doc_ids: Set[UUID] = set()
         for chunk, vector in zip(chunks, response.vectors):
             chunk.embedding = vector
             updated += 1
-            updated_doc_ids.add(str(chunk.document_id))
+            updated_doc_ids.add(chunk.document_id)
 
         for doc_id in updated_doc_ids:
             remaining = session.scalar(

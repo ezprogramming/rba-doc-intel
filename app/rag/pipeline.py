@@ -36,6 +36,7 @@ from app.db.models import ChatMessage, ChatSession
 from app.db.session import session_scope
 from app.embeddings.client import EmbeddingClient
 from app.rag.llm_client import LLMClient
+from app.rag.hooks import hooks
 from app.rag.retriever import RetrievedChunk, retrieve_similar_chunks
 from app.rag.safety import check_answer_safety, check_query_safety
 
@@ -155,6 +156,14 @@ def answer_query(
                 analysis=f"Query blocked: {safety_result.details}"
             )
 
+    hooks.emit(
+        "rag:query_started",
+        query=query,
+        session_id=str(session_id) if session_id else None,
+        top_k=top_k,
+        rerank=use_reranking,
+    )
+
     embedding_client = EmbeddingClient()
     llm_client = LLMClient()
 
@@ -170,6 +179,13 @@ def answer_query(
             query_embedding=question_vector,
             limit=top_k,
             rerank=use_reranking,  # Enable cross-encoder reranking if requested
+        )
+        hooks.emit(
+            "rag:retrieval_complete",
+            query=query,
+            chunk_ids=[chunk.chunk_id for chunk in chunks],
+            session_id=str(session_id) if session_id else None,
+            rerank=use_reranking,
         )
         chat_session = None
         if session_id:
@@ -189,7 +205,11 @@ def answer_query(
 
     # Step 4: Generate answer using LLM
     if stream_handler:
-        answer_text = llm_client.stream(SYSTEM_PROMPT, messages, stream_handler)
+        def wrapped(delta: str) -> None:
+            hooks.emit("rag:stream_chunk", session_id=str(session_id_value), token_size=len(delta))
+            stream_handler(delta)
+
+        answer_text = llm_client.stream(SYSTEM_PROMPT, messages, wrapped)
     else:
         answer_text = llm_client.complete(SYSTEM_PROMPT, messages)
 
@@ -228,6 +248,14 @@ def answer_query(
 
     with session_scope() as session:
         session.add(ChatMessage(session_id=session_id_value, role="assistant", content=answer_text))
+
+    hooks.emit(
+        "rag:answer_completed",
+        session_id=str(session_id_value),
+        chunk_ids=[chunk.chunk_id for chunk in chunks],
+        evidence_count=len(chunks),
+        answer_length=len(answer_text),
+    )
 
     analysis = _compose_analysis(chunks)
 

@@ -21,7 +21,12 @@ import argparse
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Sequence
 
+from sqlalchemy import update
+
+from app.db.models import Chunk, Document, DocumentStatus
+from app.db.session import session_scope
 from app.embeddings.indexer import generate_missing_embeddings
 
 LOGGER = logging.getLogger(__name__)
@@ -52,7 +57,37 @@ def embed_single_batch(batch_size: int, batch_num: int) -> int:
         return 0
 
 
-def main(batch_size: int = 32, parallel_batches: int = 4, max_iterations: int = 1000) -> None:
+def reset_embeddings(document_ids: Sequence[str] | None = None) -> tuple[int, int]:
+    """Null out embeddings (optionally scoped to specific documents).
+
+    Returns:
+        Tuple of (chunks_reset, documents_marked)
+    """
+
+    with session_scope() as session:
+        chunk_stmt = update(Chunk).values(embedding=None)
+        doc_stmt = update(Document).values(status=DocumentStatus.CHUNKS_BUILT.value)
+
+        if document_ids:
+            chunk_stmt = chunk_stmt.where(Chunk.document_id.in_(document_ids))
+            doc_stmt = doc_stmt.where(Document.id.in_(document_ids))
+        else:
+            # Only downgrade docs that were already embedded so NEW/TEXT docs keep their status
+            doc_stmt = doc_stmt.where(Document.status == DocumentStatus.EMBEDDED.value)
+
+        chunk_result = session.execute(chunk_stmt)
+        doc_result = session.execute(doc_stmt)
+
+        return chunk_result.rowcount or 0, doc_result.rowcount or 0
+
+
+def main(
+    batch_size: int = 24,
+    parallel_batches: int = 4,
+    max_iterations: int = 1000,
+    reset: bool = False,
+    document_ids: Sequence[str] | None = None,
+) -> None:
     """Generate embeddings for all chunks missing them.
 
     Args:
@@ -76,6 +111,14 @@ def main(batch_size: int = 32, parallel_batches: int = 4, max_iterations: int = 
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",
     )
+
+    if reset:
+        chunks_reset, docs_reset = reset_embeddings(document_ids=document_ids)
+        LOGGER.info(
+            "Reset %s chunk embeddings and marked %s documents back to CHUNKS_BUILT",
+            chunks_reset,
+            docs_reset,
+        )
 
     total_embedded = 0
     iteration = 0
@@ -141,13 +184,13 @@ def main(batch_size: int = 32, parallel_batches: int = 4, max_iterations: int = 
 
 if __name__ == "__main__":
     # Command-line interface for flexibility
-    # Usage: uv run scripts/build_embeddings.py --batch-size 64 --parallel 8
+    # Usage: uv run scripts/build_embeddings.py --batch-size 64 --parallel 8 --reset
     parser = argparse.ArgumentParser(description="Generate embeddings in parallel")
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=32,
-        help="Chunks per batch (default: 32). Larger = more GPU memory usage"
+        default=24,
+        help="Chunks per batch (default: 24). Larger = more GPU memory usage"
     )
     parser.add_argument(
         "--parallel",
@@ -161,10 +204,23 @@ if __name__ == "__main__":
         default=1000,
         help="Max iterations (default: 1000, safety limit)"
     )
+    parser.add_argument(
+        "--reset",
+        action="store_true",
+        help="Null out existing chunk embeddings before backfilling",
+    )
+    parser.add_argument(
+        "--document-id",
+        action="append",
+        dest="document_ids",
+        help="Repeatable option to reset/backfill a subset of document IDs",
+    )
     args = parser.parse_args()
 
     main(
         batch_size=args.batch_size,
         parallel_batches=args.parallel,
-        max_iterations=args.max_iter
+        max_iterations=args.max_iter,
+        reset=args.reset,
+        document_ids=args.document_ids,
     )

@@ -7,12 +7,12 @@
 -- HNSW index for fast approximate nearest neighbor search on embeddings
 -- Uses cosine distance for similarity (best for normalized embeddings)
 -- Note: This may take several minutes on large tables
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chunks_embedding_hnsw
+CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw
 ON chunks USING hnsw (embedding vector_cosine_ops);
 
 -- Alternative: IVFFlat index (faster build, slightly slower query)
 -- Uncomment if HNSW build is too slow:
--- CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_chunks_embedding_ivfflat
+-- CREATE INDEX IF NOT EXISTS idx_chunks_embedding_ivfflat
 -- ON chunks USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
 
 -- ============================================================================
