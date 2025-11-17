@@ -33,6 +33,107 @@
 **The Key Insight:**
 These problems are **interconnected**. Your chunking strategy must account for visual content, and your multimodal approach affects how you chunk.
 
+### Project Key Pillars (Interview Talking Points)
+
+When the interviewer pivots from generic RAG theory to "tell me about *your* system," anchor on these three pillars implemented in the RBA platform:
+
+1. **LLM Fine-Tuning & Alignment Stack** – preference data flows from the Streamlit UI (thumbs up/down + comments) into `make export-feedback`, forming JSONL preference pairs. We run lightweight SFT/PEFT via LoRA/QLoRA adapters plus DPO (`make finetune`) on an internal GPU/M-series runner. Reward signals come from both explicit ratings and guardrail triggers (toxicity/PII classifiers), enabling RLHF/RLAIF-style iteration without touching the base model.
+2. **Evaluation & Guardrails Framework** – offline eval harness (50+ gold questions) scored with RAGAS-style metrics, plus hook-based telemetry (`app/rag/hooks.py`) feeding grounding/safety dashboards. Online A/B switches (Streamlit sidebar toggles for reranking/recency) capture deltas while guardrail metrics (toxicity, bias, privacy, hallucination rate) gate deployments.
+3. **Retrieval + Agentic Control Plane** – hybrid pgvector/BM25 retriever with year-aware recency filters, cross-encoder reranking, resilient fallbacks, and policy-driven tool calls (MinIO storage, Postgres chat memory). The pipeline handles safe function calling (no direct SQL/MinIO exposure to the LLM) and maintains per-session memory via `ChatSession` + `ChatMessage` rows, so answers remain grounded even when reruns or service restarts occur.
+
+Use this trio as the skeleton for any behavioral/practical question: "How do you ensure answers stay fresh?" → talk about recency-aware retrieval + reranking; "How do you align the model?" → mention LoRA+DPO loop with user feedback; "How do you test safety?" → cite offline eval + guardrail metrics.
+
+#### Code receipts per pillar
+
+**1. LLM Fine-Tuning & Alignment Stack**
+
+```env
+# .env.example
+LLM_MODEL_NAME=qwen2.5:7b
+LLM_API_BASE_URL=http://llm:11434
+LLM_API_KEY=
+```
+
+```make
+# Makefile
+export-feedback: ## Export thumbs up/down feedback as preference pairs
+	$(UV_RUN) python scripts/export_feedback_pairs.py $(ARGS)
+
+finetune: ## Launch the LoRA DPO fine-tuning script
+	$(UV_RUN) python scripts/finetune_lora_dpo.py $(ARGS)
+```
+
+```python
+# scripts/export_feedback_pairs.py
+with session_scope() as session:
+    stmt = (
+        select(ChatMessage, Feedback)
+        .join(Feedback, Feedback.chat_message_id == ChatMessage.id)
+    )
+    ...  # Build positive/negative buckets per prompt
+
+export_jsonl(...)
+```
+
+```python
+# scripts/finetune_lora_dpo.py
+lora_config = LoraConfig(r=8, lora_alpha=16, target_modules=["q_proj", "k_proj", "v_proj", "o_proj"], ...)
+model = get_peft_model(model, lora_config)
+trainer = DPOTrainer(model=model, train_dataset=dataset, tokenizer=tokenizer, beta=args.beta, ...)
+trainer.train()
+trainer.save_model()
+```
+
+Use these snippets to prove we really do preference tuning from UI feedback all the way through LoRA adapters.
+
+**2. Evaluation & Guardrails Framework**
+
+```python
+# app/rag/hooks.py
+hooks.emit("rag:query_started", query=query, session_id=str(session_id))
+hooks.emit("rag:retrieval_complete", chunk_ids=[c.chunk_id for c in chunks])
+hooks.emit("ui:feedback_recorded", message_id=message_id, score=score)
+```
+
+```python
+# app/rag/safety.py
+def check_query_safety(text: str) -> SafetyCheckResult:
+    violations = []
+    violations.extend(detect_pii(text))
+    violations.extend(detect_prompt_injection(text))
+    violations.extend(detect_toxicity(text))
+    return SafetyCheckResult(is_safe=not violations, violations=violations, ...)
+```
+
+Hook emissions feed dashboards; `check_query_safety` / `check_answer_safety` gate every response.
+
+**3. Retrieval + Agentic Control Plane**
+
+```python
+# app/rag/retriever.py
+if recency_bias and target_year:
+    allowed_years = {target_year, target_year - 1}
+    items = [item for item in items if item["publication_date"].year in allowed_years]
+final_score = (
+    SEMANTIC_WEIGHT * semantic_score +
+    LEXICAL_WEIGHT * lexical_score +
+    RECENCY_WEIGHT * recency_score
+)
+```
+
+```python
+# app/ui/streamlit_app.py
+use_reranking = st.sidebar.checkbox("Enable reranking", value=True)
+response = answer_query(..., use_reranking=use_reranking)
+```
+
+```python
+# app/rag/reranker.py (excerpt)
+reranked = reranker.rerank(query=query_text, chunks=candidates, top_k=limit)
+```
+
+These code paths show how the agent enforces policy-driven retrieval, safe tool usage, and stateful UI controls.
+
 ### Industry Consensus (2024-2025)
 
 **For Text Chunking:**
@@ -1422,6 +1523,221 @@ Does your PDF have visual content?
    ```
 
 3. **Deploy the adapter** – load the saved LoRA weights alongside the base HF model (or merge them) before benchmarking/serving via Ollama. Talking point: *"We run a nightly LoRA+DPO job using only our in-app feedback, so we can improve alignment without retraining the base model or paying cloud RLHF costs."*
+
+## Project Deep Dive: Fine-Tuning, Evaluation, Retrieval & Agents
+
+Use the following narrative to connect platform decisions to the three focus areas interviewers keep asking about in 2025.
+
+### 1. LLM Designing + Fine-Tuning (SFT → PEFT → DPO/RLAIF)
+
+| Phase | What We Do | Why It Matters |
+|-------|------------|----------------|
+| **Base model selection** | Run `ollama pull qwen2.5:7b` (or 1.5B for CPU) so local inference stays air-gapped. Streamlit streams directly from the Ollama container. | Keeps latency manageable (<1s/token) while supporting on-prem compliance. |
+| **Supervised fine-tuning (SFT)** | Start from curated analyst Q/A pairs (economics primers, SMP summaries). Apply LoRA adapters via `make finetune ARGS="--dataset data/sft.jsonl"`. | Teaches macro reasoning style + citation cadence before touching feedback data. |
+| **PEFT/LoRA/QLoRA** | Hugging Face `peft` adapters stored under `models/rba-lora-*`; QLoRA lets us fine-tune 7B models on M2/M3 Macs (4-bit base weights, 16-bit adapters). | Impossible to retrain full 7B locally; adapters keep VRAM <8 GB. |
+| **Distillation** | When we run heavier models (Claude/GPT-4) offline for chart descriptions, we distill their answers back into the local LoRA set. | Captures premium-model reasoning without recurring cost. |
+| **RLHF / DPO / RLAIF loop** | `make export-feedback` → preference pairs → TRL’s `DPOTrainer` with reward signals from thumbs up/down *plus* classifier scores (toxicity, hallucination). | Converts implicit human signals + automated guardrails into a reward model; nightly job sharpens alignment without rebuilding the base model. |
+
+**Code references for each phase**
+
+- **Base model selection**
+
+```yaml
+# docker-compose.yml (llm service excerpt)
+  llm:
+    image: ollama/ollama:latest
+    environment:
+      OLLAMA_HOST: 0.0.0.0
+    ports:
+      - "11434:11434"
+```
+
+- **SFT + PEFT**
+
+```bash
+make finetune ARGS="--dataset data/sft.jsonl --base-model microsoft/phi-2 --output-dir models/rba-lora-sft"
+```
+
+```python
+# scripts/finetune_lora_dpo.py
+model = AutoModelForCausalLM.from_pretrained(model_name, ...)
+lora_config = LoraConfig(r=8, lora_alpha=16, target_modules=["q_proj", "k_proj", "v_proj", "o_proj"], ...)
+model = get_peft_model(model, lora_config)
+```
+
+- **Distillation inputs**
+
+```bash
+# Teacher outputs (Claude/GPT) saved as data/teacher_responses.jsonl
+make finetune ARGS="--dataset data/teacher_responses.jsonl --beta 0 --output-dir models/rba-lora-distilled"
+```
+
+- **RLHF / DPO / RLAIF loop**
+
+```bash
+make export-feedback ARGS="--output data/feedback_pairs.jsonl"
+make finetune ARGS="--dataset data/feedback_pairs.jsonl --beta 0.1 --output-dir models/rba-lora-dpo"
+```
+
+Tie each interview answer back to these commands/files so you can prove the workflow exists end-to-end.
+
+**Sound bite:** *“We combine explicit user feedback with automated guardrail triggers to form a composite reward signal, then run LoRA+DPO passes so the local model keeps improving without any cloud dependencies.”*
+
+### 2. Evaluation Frameworks (Quality, Grounding, Safety)
+
+1. **Offline regression suite** – 50+ gold questions covering forecasts, historical comparisons, policy rationales. Each answer scored for factuality, grounding, citation quality, and numerical accuracy. Tools: RAGAS-style evaluators + custom SQL scripts to verify cited pages.
+2. **Hook-based telemetry** – `app/rag/hooks.py` emits `rag:*` and `ui:*` events (query start, retrieval complete, stream chunk, answer completion, feedback recorded). We ingest these into a lightweight dashboard to track latency, chunk overlap, grounding ratio, and guardrail violations per build.
+3. **Safety stack** – `check_query_safety` / `check_answer_safety` run toxicity, PII, and prompt-injection classifiers. Additionally, every answer logs the publication dates of supporting chunks so we can detect stale data. Guardrail metrics (toxicity rate, hallucination complaints, privacy flags) gate release candidates.
+4. **Online A/B knobs** – Streamlit sidebar toggles (reranking on/off, recency bias adjustments) plus environment flags (`USE_RERANKING`, `CRAWLER_YEAR_FILTER`) allow shadow experiments. We log uplift/delta for accuracy and latency before promoting a setting to default.
+
+```python
+# tests/ui/test_feedback.py
+def test_store_feedback_creates_new_record(patch_session):
+    session = DummySession(existing=None)
+    patch_session(session)
+    store_feedback(message_id=2, score=-1, comment=None)
+    assert isinstance(session.added, Feedback)
+```
+
+Offline tests like the above guard regression cases; hooks + safety checks close the loop online.
+
+**Interview takeaway:** *“Evals aren’t a one-off spreadsheet—we wired hooks and guardrails into the runtime so any regression surfaces immediately, and we can run low-risk A/B tests by flipping sidebar toggles.”*
+
+### 3. Retrieval-Augmented & Agentic Workflows
+
+- **Hybrid retriever** (`app/rag/retriever.py`): 768-dim pgvector cosine scores + Postgres `ts_rank_cd` lexical boosts (0.7 / 0.3 weighting). Year-aware filter keeps only chunks whose `publication_date` matches the query year (or year-1), so Sydney-2025 questions surface 2024/2025 SMP passages by default.
+- **Reranking policy**: Cross-encoder reranker loads lazily (`app/rag/reranker.py`); the Streamlit checkbox enables it, pulling `top_k * 10` candidates (now 6 → 60) and rescoring for precision. Disabled reranker falls back to deterministic hybrid ordering.
+- **Agentic pattern & tool use**: The LLM never calls tools directly. Instead, business logic orchestrates embeddings, SQL queries, MinIO storage, and logging. This is a *policy-driven tool proxy*—the app decides when to hit Postgres or MinIO, keeping credentials out of prompt space and satisfying safe function calling requirements.
+- **Memory/state management**: Conversations persist via `ChatSession`/`ChatMessage` tables. Streamlit session state caches the session UUID, latest message IDs (for feedback), and reranking toggle so a browser refresh doesn’t drop context.
+- **Fallback strategy**: If embeddings/reranking fail, we degrade gracefully—hybrid retrieval still returns top chunks; LLM streaming fallback uses `complete()` when streaming fails; guardrail violations respond with templated messages while logging the incident for review.
+
+Tie this together in interviews: *“Our RAG agent is deterministic and policy-driven: the LLM receives only curated context, while the app enforces year filters, reranking, and safety checks. Even under failures we still return a grounded answer or a clear guardrail message.”*
+
+### Code Walkthrough (Show Don’t Tell)
+
+When pressed for implementation detail, cite the exact modules below. Copy/paste snippets into your prep doc so you can recite the control flow without hunting through the repo mid-interview.
+
+#### RAG Pipeline Orchestration – `app/rag/pipeline.py`
+
+```python
+def answer_query(
+    query: str,
+    session_id: UUID | None = None,
+    top_k: int = 6,
+    stream_handler: TokenHandler | None = None,
+    use_reranking: bool = False,
+    safety_enabled: bool = True,
+) -> AnswerResponse:
+    if safety_enabled:
+        safety_result = check_query_safety(query)
+        if not safety_result.is_safe:
+            return AnswerResponse(...)
+
+    hooks.emit("rag:query_started", ...)
+    embedding_client = EmbeddingClient()
+    llm_client = LLMClient()
+    question_vector = embedding_client.embed([query]).vectors[0]
+
+    with session_scope() as session:
+        chunks = retrieve_similar_chunks(
+            session,
+            query_text=query,
+            query_embedding=question_vector,
+            limit=top_k,
+            rerank=use_reranking,
+        )
+        ... # persist ChatMessage rows
+
+    answer_text = (
+        llm_client.stream(..., stream_handler)
+        if stream_handler else
+        llm_client.complete(...)
+    )
+    if safety_enabled:
+        answer_safety = check_answer_safety(answer_text)
+        ...
+    return AnswerResponse(...)
+```
+
+Talking points:
+- Safety guardrails wrap both query and answer.
+- Hooks instrument each stage for telemetry.
+- `top_k=6` + reranking toggle creates a tunable recall/latency trade-off.
+
+#### Hybrid Retriever with Recency Bias – `app/rag/retriever.py`
+
+```python
+SEMANTIC_WEIGHT = 0.7
+LEXICAL_WEIGHT = 0.3
+RECENCY_WEIGHT = 0.25
+
+def retrieve_similar_chunks(..., limit: int = 5, rerank: bool = False, recency_bias: bool = True):
+    retrieval_limit = limit * rerank_multiplier if rerank else limit * 2
+    distance = Chunk.embedding.cosine_distance(query_embedding)
+    vector_rows = session.execute(vector_stmt.limit(retrieval_limit)).all()
+    lexical_rows = session.execute(lexical_stmt.limit(retrieval_limit)).all()
+
+    if recency_bias and target_year:
+        allowed_years = {target_year, target_year - 1}
+        items = [item for item in items if item["publication_date"].year in allowed_years]
+
+    final_score = (
+        SEMANTIC_WEIGHT * semantic_score +
+        LEXICAL_WEIGHT * lexical_score +
+        RECENCY_WEIGHT * recency_score
+    )
+    return results[:limit] if not rerank else rerank_results(...)
+```
+
+Talking points:
+- `allowed_years` clamp ensures Sydney-2025 questions ignore 2023 docs.
+- Hybrid scoring combines pgvector cosine + Postgres `ts_rank_cd`.
+- Reranker only loads when requested (lazy `create_reranker()`), so CPU dev machines stay responsive.
+
+#### Streamlit UI + Feedback Loop – `app/ui/streamlit_app.py`
+
+```python
+def handle_submit(question: str, use_reranking: bool) -> None:
+    entry = {"pending": True, "answer": "", ...}
+
+    def on_token(delta: str) -> None:
+        entry["answer"] += delta
+        answer_placeholder.markdown(...)
+
+    response = answer_query(
+        question,
+        session_id=st.session_state.chat_session_id,
+        stream_handler=on_token,
+        use_reranking=use_reranking,
+    )
+    ... # Persist ChatMessage, attach message_id, enable feedback buttons
+
+use_reranking = st.sidebar.checkbox("Enable reranking", value=True)
+```
+
+Talking points:
+- Sidebar checkbox is the live A/B toggle for reranking.
+- Feedback buttons call `store_feedback` → `Feedback` table, feeding the DPO loop.
+
+#### Feedback Export + LoRA/DPO Entry Points – `scripts/export_feedback_pairs.py` & `Makefile`
+
+```bash
+make export-feedback ARGS="--output data/feedback_pairs.jsonl"
+make finetune ARGS="--dataset data/feedback_pairs.jsonl"
+```
+
+Explain how this turns thumbs up/down into preference datasets, then runs PEFT/LoRA adapters through TRL’s `DPOTrainer`. Mention QLoRA for 4-bit efficiency if they probe hardware constraints.
+
+#### Guardrails & Evaluation Hooks – `app/rag/hooks.py`
+
+```python
+hooks.emit("rag:stream_chunk", session_id=str(session_id_value), token_size=len(delta))
+hooks.emit("ui:feedback_recorded", message_id=message_id, score=score)
+```
+
+Pair this with `check_query_safety` / `check_answer_safety` mentions so the interviewer sees safety baked into the code, not bolted on later.
+
+Keeping these snippets handy lets you pivot from high-level strategy to concrete implementation proof whenever the interviewer asks, “What does that look like in code?”
 
 ### Interview Cheat Sheet
 
