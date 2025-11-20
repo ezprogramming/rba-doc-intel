@@ -45,7 +45,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
@@ -90,6 +90,8 @@ class EvaluationMetrics:
     retrieval_chunks: int = 0
     passed: bool = False
     error: Optional[str] = None
+    answer_text: Optional[str] = None
+    retrieved_chunks: List[Dict[str, Any]] = field(default_factory=list)
 
 
 def compute_keyword_match(
@@ -199,6 +201,8 @@ def evaluate_single_example(
         # Compute metrics
         metrics.answer_length = len(answer)
         metrics.retrieval_chunks = len(evidence)
+        metrics.answer_text = answer
+        metrics.retrieved_chunks = evidence
 
         # Compute keyword match if expected keywords provided
         if example.expected_keywords:
@@ -345,8 +349,8 @@ def run_evaluation(
         result = EvalResult(
             eval_run_id=run_id,
             eval_example_id=example.id,
-            llm_answer=None,  # TODO: Store answer if needed
-            retrieved_chunks=None,  # TODO: Store chunks if needed
+            llm_answer=metrics.answer_text,
+            retrieved_chunks=metrics.retrieved_chunks or None,
             latency_ms=metrics.latency_ms,
             scores={
                 "keyword_match": metrics.keyword_match,

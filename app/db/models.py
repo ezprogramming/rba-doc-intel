@@ -4,14 +4,23 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum as PyEnum
-from uuid import uuid4, UUID
-
-from sqlalchemy import Column, Date, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID, TSVECTOR
-from sqlalchemy.orm import declarative_base, relationship
+from uuid import UUID, uuid4
 
 from pgvector.sqlalchemy import Vector
-
+from sqlalchemy import (
+    JSON,
+    Column,
+    Date,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import TSVECTOR
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
 
@@ -74,6 +83,8 @@ class Chunk(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     document_id = Column(PG_UUID(as_uuid=True), ForeignKey("documents.id"), nullable=False)
+    table_id = Column(Integer, ForeignKey("tables.id", ondelete="SET NULL"), nullable=True)
+    chart_id = Column(Integer, ForeignKey("charts.id", ondelete="SET NULL"), nullable=True)
     page_start = Column(Integer, nullable=True)
     page_end = Column(Integer, nullable=True)
     chunk_index = Column(Integer, nullable=False)
@@ -90,6 +101,8 @@ class Chunk(Base):
     )
 
     document = relationship("Document", back_populates="chunks")
+    table = relationship("Table", back_populates="chunks")
+    chart = relationship("Chart", back_populates="chunks")
 
 
 class ChatSession(Base):
@@ -137,7 +150,11 @@ class Table(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
 
     # Link to source document and page
-    document_id = Column(PG_UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    document_id = Column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False
+    )
     page_number = Column(Integer, nullable=False)
 
     # Table data (list of row dicts from pandas DataFrame.to_dict('records'))
@@ -156,6 +173,53 @@ class Table(Base):
     caption = Column(Text, nullable=True)
 
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    chunks = relationship("Chunk", back_populates="table")
+
+
+class Chart(Base):
+    """Chart/graph image extracted from PDF page.
+
+    Why extract charts?
+    - Visual data complements tables (trends, distributions)
+    - Flag chunks with charts for better retrieval
+    - Future multimodal RAG: vision LLM can analyze chart content
+    - Preserve context: "GDP chart shows declining trend"
+
+    Example metadata structure:
+    image_metadata = {
+        "width": 600,
+        "height": 400,
+        "format": "png",
+        "image_index": 0  # Index among images on this page
+    }
+    """
+    __tablename__ = "charts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+
+    # Link to source document and page
+    document_id = Column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    page_number = Column(Integer, nullable=False)
+
+    # Image metadata (width, height, format, image_index)
+    # Stores: dimensions, format (png/jpeg), and index on page
+    image_metadata = Column(JSON, nullable=False)
+
+    # Bounding box coordinates [x0, y0, x1, y1] on page
+    # Useful for visual highlighting or OCR re-extraction
+    bbox = Column(JSON, nullable=True)
+
+    # Optional: S3 key if chart image saved to MinIO
+    # Format: derived/charts/{document_id}/page_{num}_chart_{idx}.{ext}
+    # Future use: vision LLM can fetch and analyze
+    s3_key = Column(Text, nullable=True)
+
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    chunks = relationship("Chunk", back_populates="chart")
 
 
 # ============================================================================
@@ -251,7 +315,11 @@ class EvalResult(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
 
     # Which run does this result belong to?
-    eval_run_id = Column(PG_UUID(as_uuid=True), ForeignKey("eval_runs.id", ondelete="CASCADE"), nullable=False)
+    eval_run_id = Column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("eval_runs.id", ondelete="CASCADE"),
+        nullable=False
+    )
 
     # Which example was tested?
     eval_example_id = Column(Integer, ForeignKey("eval_examples.id"), nullable=False)

@@ -87,8 +87,10 @@ AI tools must use exactly these:
    - A Python module that:
      - Reads pending documents from Postgres.
      - Streams PDF from MinIO.
-     - Extracts text per page; cleans it; splits into chunks.
-     - Writes text chunks + metadata to Postgres.
+   - Extracts text per page; cleans it; splits into chunks.
+   - Extracts tables (Camelot lattice+stream), stores structured rows, and emits enriched chunk text (caption + headers + per-row sentences) with a `chunks.table_id` back-reference so retrieval can surface both the summary and the exact structured rows. This runs as its own stage (`scripts/extract_tables.py`) after text chunking to keep the main pipeline lean.
+   - Optionally records chart/large-image metadata for future multimodal RAG.
+   - Writes text/table chunks + metadata to Postgres.
      - Optionally writes page-level text into MinIO (e.g. `text/` prefix).
 
 3. **Embedding & Indexing Pipeline**
@@ -105,7 +107,7 @@ AI tools must use exactly these:
        - Optionally filters by doc_type, date range, etc.
        - Assembles a RAG prompt (context + question).
        - Calls the LLM to generate an answer.
-     - Returns structured answer object: `answer`, `evidence`, `analysis`. The `analysis` field must summarize which documents/pages grounded the response so downstream UIs can show reasoning breadcrumbs.
+     - Returns structured answer object: `answer`, `evidence`, `analysis`. Each evidence entry must include chunk metadata and, when `table_id` is present, the corresponding structured rows from the `tables` table for citation/verification. The `analysis` field must summarize which documents/pages grounded the response so downstream UIs can show reasoning breadcrumbs.
 
 5. **Streamlit UI**
    - A simple chat-like frontend that:
@@ -199,6 +201,7 @@ Use a central `app/config.py` to load configuration via environment variables, e
   - `make bootstrap` – install dependencies (`uv sync`).
   - `make crawl`
   - `make process`
+  - `make tables`
   - `make embeddings`
   - `make refresh`
   - `make streamlit`
@@ -247,6 +250,8 @@ Represents text chunks used for RAG.
 
 - `id: BIGSERIAL`
 - `document_id: UUID`
+- `table_id: BIGINT` (nullable FK to `tables.id` when the chunk was generated from a structured table)
+- `chart_id: BIGINT` (nullable FK to `charts.id` when the chunk was generated from a chart/large image)
 - `page_start: INT` (first page covered by this chunk)
 - `page_end: INT` (last page covered)
 - `chunk_index: INT` (0-based index per document)
@@ -275,6 +280,37 @@ Per message in a chat session.
 - `content: TEXT`
 - `created_at: TIMESTAMPTZ`
 - `metadata: JSONB` (e.g., RAG context IDs used for that response)
+
+### 6.6 `tables`
+
+Structured table storage extracted via Camelot.
+
+- `id: BIGSERIAL`
+- `document_id: UUID` (FK to `documents`, cascade delete)
+- `page_number: INT`
+- `structured_data: JSONB` (list of row dicts)
+- `bbox: JSONB` (optional bounding box)
+- `accuracy: INT` (Camelot confidence score, optional)
+- `caption: TEXT`
+- `created_at: TIMESTAMPTZ`
+
+Linkage requirements:
+- Every table-derived chunk must set `chunks.table_id = tables.id`.
+- Retrieval responses should include structured rows when `table_id` is present so UIs can show/export the real table content alongside the flattened text.
+
+### 6.7 `charts`
+
+Metadata for extracted charts/large images (future multimodal support).
+
+- `id: BIGSERIAL`
+- `document_id: UUID` (FK to `documents`, cascade delete)
+- `page_number: INT`
+- `image_metadata: JSONB` (width, height, format, image_index)
+- `bbox: JSONB` (bounding box on page)
+- `s3_key: TEXT` (optional MinIO path for stored chart image)
+- `created_at: TIMESTAMPTZ`
+
+Chunks that originate from detected charts should set `chunks.chart_id` so evidence can expose chart context alongside text.
 
 **Do not** create extra tables unless necessary and explicitly discussed.
 
@@ -330,8 +366,9 @@ PDF text cleaning must handle:
    - Normalize multiple `\n` into paragraph-level breaks (e.g. single `\n` inside paragraph, double `\n\n` between paragraphs).
 
 4. **Non-text content**
-   - Tables and charts may not parse cleanly.
-   - Initial version: treat them as plain text; do **not** implement OCR or structural table parsing.
+   - Tables and charts may not parse cleanly via text extraction alone.
+   - Dedicated table extraction uses Camelot after text processing; store the structured rows in `tables` and keep flattened summaries in `chunks`.
+   - Chart/large image metadata can be captured into `charts` with optional `chunks.chart_id` back-references for future multimodal retrieval.
    - Mark pages with low text density as `is_sparse` in `pages` metadata if you want to skip them during RAG.
 
 5. **Unicode / Encoding**
@@ -539,7 +576,7 @@ AI tools must **not** scrape random unrelated websites; stay focused on RBA sour
 The following are explicitly **future ideas**, NOT part of the initial implementation:
 
 - OCR pipeline for scanned PDFs.
-- Advanced table extraction for numeric datasets.
+- Advanced table extraction for numeric datasets (Camelot-based). Table rows must also be flattened into retrieval chunks so embeddings/RAG can use them.
 - Additional vector stores or search engines (Elasticsearch, etc.).
 - External schedulers (Airflow, Prefect, etc.).
 - Multi-user auth and access control in Streamlit.

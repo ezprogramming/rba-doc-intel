@@ -9,6 +9,7 @@ Follow the prescribed layout:
 - `app/db/` contains SQLAlchemy models and session helpers.
 - `app/storage/` defines the MinIO adapter.
 - `app/pdf/` handles parsing, cleaning, chunking.
+- Table extraction (Camelot, lattice+stream) runs during processing; tables are stored in `tables` **and flattened into chunks for embedding/retrieval**.
 - `app/embeddings/` owns embedding client + batch indexer.
 - `app/rag/` includes retriever, LLM client, pipeline entry (`answer_query`).
 - `app/ui/streamlit_app.py` renders the chat UI.
@@ -23,6 +24,8 @@ Use the Makefile wrappers (see `make help`) so all contributors share the same C
 - `make up-embedding` — start the local embedding API (FastAPI + sentence-transformers). It must be healthy before `scripts/build_embeddings.py` succeeds.
 - `make crawl` — crawl RBA sites, push PDFs to MinIO, insert metadata.
 - `make process` — pull pending docs, produce cleaned chunks.
+- `make tables` — run the Camelot extraction pass to populate the `tables` store and emit enriched table chunks that link back via `table_id`.
+- After chunking/table changes, rerun `make process` (or reset specific docs to `NEW`), then `make tables` (with `--force` as needed) and finally `make embeddings` so both prose and table chunks are re-embedded.
 - `make embeddings` — fill missing pgvector embeddings (respects `EMBEDDING_BATCH_SIZE`/`EMBEDDING_API_TIMEOUT`). Append `ARGS="--reset"` to null out existing vectors (after chunk strategy changes) or `ARGS="--document-id <uuid>"` to target specific documents.
 - `make export-feedback ARGS="--output data/feedback_pairs.jsonl"` — convert stored thumbs-up/down into preference pairs.
 - `make finetune ARGS="--dataset data/feedback_pairs.jsonl"` — train/update the LoRA adapter via DPO.
@@ -33,6 +36,11 @@ During local debugging you can set `CRAWLER_YEAR_FILTER` to limit ingestion to r
 
 ## Coding Style & Data Contracts
 Use four-space indentation, PEP 8 naming, and thorough type hints. Keep SQLAlchemy models in `app/db/models.py` (documents, pages, chunks, chat tables) matching the schema in `CLAUDE.md`. Expose pure functions/classes in library modules and reserve side effects for scripts. Structure RAG responses as `{answer, evidence[], analysis}` and persist chat interactions per the spec. Documents must record `source_url`, `content_hash`, and `content_length`; chunk embeddings are fixed at 768 dims to match `nomic-ai/nomic-embed-text-v1.5`, and every chunk should populate `section_hint` + `text_tsv` so the UI and hybrid retriever stay in sync.
+
+Table handling requirements:
+- Dual storage is mandatory: structured rows live in the `tables` table, while enriched summaries (caption, headers, row sentences, inferred metric tags) live in `chunks`.
+- Every table-derived chunk must set `chunks.table_id` so downstream components can fetch the precise structured rows for display/verification; evidence payloads should surface the structured JSON when available.
+- Charts/large images are tracked via the `charts` table and optional `chunks.chart_id` references so future multimodal steps can fetch bounding boxes or stored images; keep the schema in sync with `docker/postgres/initdb.d/06_add_charts_table.sql`.
 
 ## Testing & Data Quality
 Place tests under `tests/` mirroring module paths (`tests/rag/test_pipeline.py`, etc.). Prefer `pytest` fixtures to mock MinIO/Postgres; add lightweight integration tests that process sample PDFs end-to-end. Every change should keep `make test ARGS="-q"` green and cover regression points (crawler edge cases, chunking boundaries, retrieval filters, embedding client timeouts). New helpers (e.g. cleaners, analysis formatters) should ship with unit coverage before touching ingestion/RAG code.

@@ -26,7 +26,7 @@
 | `app/config.py` | Environment settings (DB, MinIO, embedding, LLM) |
 | `app/db/` | SQLAlchemy models + DB session management |
 | `app/storage/` | MinIO/S3 client wrapper |
-| `app/pdf/` | PDF extract → clean → chunk pipeline |
+| `app/pdf/` | PDF extract → clean → chunk pipeline (+ table/chart metadata) |
 | `app/embeddings/` | Embedding client + batch backfill |
 | `app/rag/` | RAG pipeline, retrieval, reranking, hooks, eval |
 | `app/ui/` | Streamlit chat interface |
@@ -41,13 +41,14 @@
 
 ---
 
-## Database Schema (10 Tables)
+## Database Schema (11 Tables)
 
 ```
 documents          → Documents (PDFs) with status flow: NEW → TEXT_EXTRACTED → CHUNKS_BUILT → EMBEDDED
 ├── pages          → Extracted page text (raw + clean)
-├── chunks         → RAG segments (text + 768-dim embedding + section_hint)
-├── tables         → Extracted table data (Camelot, JSONB)
+├── chunks         → RAG segments (text + 768-dim embedding + section_hint, optional table_id/chart_id)
+├── tables         → Extracted table data (Camelot, JSONB) **now chunked & embedded**
+├── charts         → Chart/large-image metadata (bbox + image info, optional MinIO key)
 ├── eval_examples  → Test queries (gold answers, difficulty, category)
 ├── eval_runs      → Evaluation batches (config, status, metrics)
 └── eval_results   → Per-query eval result (scores, latency, error)
@@ -64,7 +65,7 @@ Indexes: HNSW (vector), GIN (full-text), composite (type/date, status, session)
 ## Operations Checklist
 
 ### Setup
-- [ ] Copy `.env.example` → `.env` (adjust if needed)
+- [ ] Copy `.env.example` → `.env` (fill all required DB/MinIO/embedding/LLM values)
 - [ ] `make bootstrap`
 
 ### Start Services
@@ -77,7 +78,8 @@ make llm-pull MODEL=qwen2.5:7b
 ```bash
 make crawl
 make process
-make embeddings ARGS="--batch-size 24 --parallel 2"
+make tables
+make embeddings ARGS="--batch-size 8 --parallel 2"
 ```
 
 ### Run UI
@@ -120,14 +122,21 @@ make finetune
    - Fetches pending PDFs from MinIO
    - PyMuPDF → extract pages (raw text)
    - Cleaner → remove headers/footers (RBA-specific patterns)
-   - Chunker → recursive split (768 tokens, 15% overlap)
+   - Chunker → paragraph-aware split (768 tokens, sentence overlap, RBA section hints)
    - Persist `pages` + `chunks` tables
    - Update `documents` (status=CHUNKS_BUILT)
 
-3. **Embedder** (`build_embeddings.py`)
+3. **Table Extractor** (`extract_tables.py`)
+   - Downloads processed PDFs
+   - Camelot lattice + stream table detection
+   - Persist `tables` rows + flattened table chunks
+   - Downgrade doc status to CHUNKS_BUILT if new chunks added
+
+4. **Embedder** (`build_embeddings.py`)
    - Find chunks where `embedding IS NULL`
    - Call `/embeddings` API (nomic-embed-text-v1.5, 768-dim)
-   - Batch + parallel workers for speed
+   - Batch + parallel workers for speed (defaults from `.env`: batch 8, parallel 2)
+   - Retries with backoff; aborts after consecutive failures to surface outages
    - Update `chunks.embedding`
    - Mark document (status=EMBEDDED)
 
@@ -167,11 +176,12 @@ make finetune
 - `extract_pages(pdf_path)` - PyMuPDF → List[str] pages
 - `detect_repeating_headers_footers(pages)` - Regex + frequency
 - `chunk_pages(clean_pages, max_tokens=768, overlap_pct=0.15)` - Recursive split
-- Optional: Camelot table extraction
+- Camelot table extraction (stream+lattice) runs via `scripts/extract_tables.py`; tables are saved to `tables` and flattened into chunks for retrieval/embedding.
 
 ### Embeddings (`app/embeddings/`)
 - `EmbeddingClient` - HTTP POST `/embeddings` wrapper
 - `generate_missing_embeddings(batch_size, limit)` - Backfill logic
+- Embedding service device: auto-detects GPU; override with `EMBEDDING_DEVICE=cuda|mps|cpu` (affects processing + query-time embeddings).
 
 ### RAG (`app/rag/`)
 - `retrieve_similar_chunks(session, query_text, query_embedding, limit=5)` - Hybrid search

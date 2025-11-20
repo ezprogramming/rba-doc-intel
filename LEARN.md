@@ -235,18 +235,19 @@ debug: ## Run scripts/debug_dump.py for ingestion stats
 **Pipeline flow:**
 1. `make crawl` - Download PDFs from RBA website → MinIO
 2. `make process` - Extract text from PDFs → PostgreSQL (pages, chunks)
-3. `make embeddings` - Generate embeddings for chunks → PostgreSQL (vector column)
-4. `make ui` or `make streamlit` - Start web interface
+3. `make tables` - Camelot lattice+stream extraction → `tables` + flattened table chunks (with `table_id`)
+4. `make embeddings` - Generate embeddings for prose + table chunks → PostgreSQL (vector column)
+5. `make ui` or `make streamlit` - Start web interface
 
 **Shortcuts:**
-- `make refresh` - Runs all 3 steps sequentially (crawl → process → embeddings)
+- `make refresh` - Runs crawl → process → embeddings (run `make tables` in between when tabular updates are needed)
 - `make embeddings-reset` - Wipe existing embeddings and regenerate (useful after changing chunk strategy)
 - `make debug` - Show statistics (how many documents, pages, chunks)
 
 **Passing arguments:**
 ```bash
 make crawl ARGS="--year 2024"                    # Only crawl 2024 documents
-make embeddings ARGS="--batch-size 32 --parallel 4"  # Tune performance
+make embeddings ARGS="--batch-size 8 --parallel 2"   # Override .env defaults as needed
 ```
 
 #### Lines 58-62: ML Engineering
@@ -380,7 +381,8 @@ class Settings:
 **Why all these settings?**
 - **Database:** Connection string for PostgreSQL
 - **MinIO:** S3-compatible object storage credentials
-- **Embedding:** HTTP API for generating vectors
+- **Embedding:** HTTP API for generating vectors + batch/parallel tuning knobs
+- **PDF/Table processing:** Thread/process counts for ingestion stages
 - **LLM:** Local Ollama or remote API
 - **Reranking:** Optional cross-encoder for better retrieval
 
@@ -411,30 +413,55 @@ _get_bool("false")    # False
 _get_bool(None, True) # True (default)
 ```
 
-#### Lines 44-78: Settings Factory
+#### Lines 44-84: Settings Factory
 
 ```python
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Load settings from environment; cached to load only once per process."""
-    missing = [key for key in ("DATABASE_URL", "MINIO_ENDPOINT") if not os.getenv(key)]
+    """Load settings once per process."""
+
+    required_keys = (
+        "DATABASE_URL",
+        "MINIO_ENDPOINT",
+        "MINIO_ACCESS_KEY",
+        "MINIO_SECRET_KEY",
+        "MINIO_BUCKET_RAW_PDF",
+        "MINIO_BUCKET_DERIVED",
+        "EMBEDDING_MODEL_NAME",
+        "EMBEDDING_API_BASE_URL",
+        "EMBEDDING_API_TIMEOUT",
+        "EMBEDDING_BATCH_SIZE",
+        "EMBEDDING_PARALLEL_BATCHES",
+        "PDF_BATCH_SIZE",
+        "PDF_MAX_WORKERS",
+        "TABLE_BATCH_SIZE",
+        "TABLE_MAX_WORKERS",
+        "LLM_MODEL_NAME",
+        "LLM_API_BASE_URL",
+    )
+    missing = [key for key in required_keys if not os.getenv(key)]
     if missing:
         raise RuntimeError(f"Missing required environment variables: {', '.join(missing)}")
 
     return Settings(
         database_url=os.environ["DATABASE_URL"],
         minio_endpoint=os.environ["MINIO_ENDPOINT"],
-        minio_access_key=os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
-        minio_secret_key=os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
+        minio_access_key=os.environ["MINIO_ACCESS_KEY"],
+        minio_secret_key=os.environ["MINIO_SECRET_KEY"],
         minio_secure=_get_bool(os.environ.get("MINIO_SECURE")),
-        minio_raw_bucket=os.environ.get("MINIO_BUCKET_RAW_PDF", "rba-raw-pdf"),
-        minio_derived_bucket=os.environ.get("MINIO_BUCKET_DERIVED", "rba-derived"),
-        embedding_model_name=os.environ.get("EMBEDDING_MODEL_NAME", "text-embedding-default"),
-        embedding_api_base_url=os.environ.get("EMBEDDING_API_BASE_URL")
-        or os.environ.get("LLM_API_BASE_URL", "http://localhost:8000"),
-        embedding_api_timeout=int(os.environ.get("EMBEDDING_API_TIMEOUT", "120")),
-        llm_model_name=os.environ.get("LLM_MODEL_NAME", "qwen2.5:7b"),
-        llm_api_base_url=os.environ.get("LLM_API_BASE_URL", "http://localhost:8000"),
+        minio_raw_bucket=os.environ["MINIO_BUCKET_RAW_PDF"],
+        minio_derived_bucket=os.environ["MINIO_BUCKET_DERIVED"],
+        embedding_model_name=os.environ["EMBEDDING_MODEL_NAME"],
+        embedding_api_base_url=os.environ["EMBEDDING_API_BASE_URL"],
+        embedding_api_timeout=int(os.environ["EMBEDDING_API_TIMEOUT"]),
+        embedding_batch_size=int(os.environ["EMBEDDING_BATCH_SIZE"]),
+        embedding_parallel_batches=int(os.environ["EMBEDDING_PARALLEL_BATCHES"]),
+        pdf_batch_size=int(os.environ["PDF_BATCH_SIZE"]),
+        pdf_max_workers=int(os.environ["PDF_MAX_WORKERS"]),
+        table_batch_size=int(os.environ["TABLE_BATCH_SIZE"]),
+        table_max_workers=int(os.environ["TABLE_MAX_WORKERS"]),
+        llm_model_name=os.environ["LLM_MODEL_NAME"],
+        llm_api_base_url=os.environ["LLM_API_BASE_URL"],
         llm_api_key=os.environ.get("LLM_API_KEY"),
         use_reranking=_get_bool(os.environ.get("USE_RERANKING"), default=False),
         reranker_model_name=os.environ.get("RERANKER_MODEL_NAME"),
@@ -445,8 +472,8 @@ def get_settings() -> Settings:
 
 **Line-by-line:**
 - Line 44: `@lru_cache(maxsize=1)` - Cache result, load config only once per process
-- Lines 47-49: Validate required variables exist, raise error early if missing
-- Lines 51-75: Read each variable with `os.environ.get(key, default)`
+- Lines 47-58: Declare required env keys and fail fast if any are missing
+- Lines 63-77: Read every required variable via `os.environ[...]` (no in-code defaults)
 
 **Why `lru_cache`?**
 - Config doesn't change during process lifetime
@@ -455,8 +482,10 @@ def get_settings() -> Settings:
 
 **Pattern for reading variables:**
 ```python
-os.environ["KEY"]           # Required - crash if missing
-os.environ.get("KEY", "default")  # Optional - use default if missing
+# Required
+os.environ["KEY"]
+# Optional with default
+os.environ.get("KEY", "default")
 ```
 
 **Usage in other modules:**
@@ -544,75 +573,115 @@ CREATE TABLE IF NOT EXISTS chunks (
 - Line 7: `embedding VECTOR(768)` - pgvector column for semantic search
 - Line 8: `section_hint TEXT` - Extracted heading (e.g., "3.2 Inflation")
 - Line 9: `text_tsv TSVECTOR` - Full-text search index (updated by trigger)
+- `table_id` / `chart_id` columns (nullable) link chunks back to structured tables and chart metadata so evidence can surface the source JSON or image metadata without heuristics. Added via migrations `04_add_chunk_table_link.sql` and `06_add_charts_table.sql`.
 
 **Why TSVECTOR column?**
 - Precomputed for fast lexical search
 - Trigger keeps it updated (see `02_create_indexes.sql`)
 - Alternative: compute on-the-fly (slower, uses more CPU)
 
-#### `02_create_indexes.sql` (Key Excerpts)
+#### `02_create_indexes.sql` (Key Excerpts with Workflow Links)
 
-**Vector index:**
-```sql
-CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw
-ON chunks USING hnsw (embedding vector_cosine_ops)
-WITH (m = 16, ef_construction = 64);
-```
+- **Vector ANN index (retrieval):**
+  ```sql
+  CREATE INDEX IF NOT EXISTS idx_chunks_embedding_hnsw
+  ON chunks USING hnsw (embedding vector_cosine_ops);
+  ```
+  - Used by hybrid retriever to run fast cosine ANN over `chunks.embedding`.
+  - HNSW gives 10-100x faster search than brute force; keeps latency low when chatting.
+  - IVFFlat alternative (commented) is a lighter build if HNSW is too slow on huge corpora.
 
-**What this does:**
-- Creates HNSW (Hierarchical Navigable Small World) index
-- Parameters: `m=16` (connections per node), `ef_construction=64` (build quality)
+- **Full-text search (lexical leg of hybrid):**
+  ```sql
+  CREATE INDEX IF NOT EXISTS idx_chunks_text_fts
+  ON chunks USING gin(text_tsv);
 
-**Why HNSW?**
-- Fast approximate nearest neighbor search
-- 10-100x faster than brute force
-- Industry standard (used by Pinecone, Weaviate)
+  CREATE TRIGGER tsvector_update
+    BEFORE INSERT OR UPDATE OF text ON chunks
+    FOR EACH ROW
+    EXECUTE FUNCTION chunks_text_tsv_trigger();
+  ```
+  - GIN index accelerates `to_tsquery` / full-text matches for hybrid retrieval.
+  - Trigger keeps `text_tsv` in sync on inserts/updates so queries never see stale lexical data.
 
-**Alternative: IVFFlat**
-- Faster to build, slower to query
-- Less accurate than HNSW
-- Use for > 1M vectors
+- **Chunk lookup / index-only scans:**
+  ```sql
+  CREATE INDEX IF NOT EXISTS idx_chunks_document_id
+  ON chunks(document_id)
+  INCLUDE (page_start, page_end, section_hint);
+  ```
+  - Speeds joins from chunks → documents and supports index-only scans when fetching chunk metadata without bloating index rows. `05_rebuild_chunk_index.sql` retrofits existing databases by dropping the older, text-heavy index and recreating this slimmer version.
+- **Table back-reference (added in `04_add_chunk_table_link.sql`):**
+  ```sql
+  ALTER TABLE chunks
+      ADD COLUMN IF NOT EXISTS table_id BIGINT REFERENCES tables(id) ON DELETE SET NULL;
 
-**Full-text search trigger:**
-```sql
-CREATE OR REPLACE FUNCTION chunks_text_tsv_trigger()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.text_tsv := to_tsvector('english', COALESCE(NEW.text, ''));
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
+  CREATE INDEX IF NOT EXISTS idx_chunks_table_id
+      ON chunks(table_id);
 
-CREATE TRIGGER tsvectorupdate BEFORE INSERT OR UPDATE
-ON chunks FOR EACH ROW EXECUTE FUNCTION chunks_text_tsv_trigger();
-```
+- **Chart metadata (added in `06_add_charts_table.sql`):**
+  ```sql
+  CREATE TABLE IF NOT EXISTS charts (
+      id BIGSERIAL PRIMARY KEY,
+      document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+      page_number INTEGER NOT NULL,
+      image_metadata JSONB NOT NULL,
+      bbox JSONB,
+      s3_key TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
 
-**What this does:**
-- Function: Converts text to tsvector (tokenized, stemmed)
-- Trigger: Runs before every INSERT/UPDATE on chunks table
-- Result: `text_tsv` column always stays in sync with `text`
+  ALTER TABLE chunks
+      ADD COLUMN IF NOT EXISTS chart_id BIGINT REFERENCES charts(id) ON DELETE SET NULL;
 
-**Why trigger instead of manual update?**
-- Automatic - no code changes needed
-- Can't forget to update it
-- Consistent across all writes
+  CREATE INDEX IF NOT EXISTS idx_chunks_chart_id ON chunks(chart_id);
+  CREATE INDEX IF NOT EXISTS idx_charts_document_id ON charts(document_id);
+  CREATE INDEX IF NOT EXISTS idx_charts_page_number ON charts(document_id, page_number);
+  ```
+  - Stores chart/large-image metadata for future multimodal retrieval.
+  - Chunk-level `chart_id` preserves provenance when referencing chart-heavy pages.
+  ```
+  - Maintains a lightweight FK from table-derived chunks to their structured source rows so retrieval/evidence can bring back the exact table JSON without heuristics.
 
-**Composite indexes:**
-```sql
-CREATE INDEX IF NOT EXISTS idx_documents_type_date
-ON documents(doc_type, publication_date DESC);
+- **Chunks missing embeddings (batching):**
+  ```sql
+  CREATE INDEX IF NOT EXISTS idx_chunks_null_embedding
+  ON chunks(document_id)
+  WHERE embedding IS NULL;
+  ```
+  - Used by `scripts/build_embeddings.py` to quickly fetch work items (chunks without vectors) without scanning the whole table.
 
-CREATE INDEX IF NOT EXISTS idx_chunks_document_id
-ON chunks(document_id) INCLUDE (text, page_start, page_end, section_hint);
-```
+- **Document filters (ingestion + retrieval constraints):**
+  ```sql
+  CREATE INDEX IF NOT EXISTS idx_documents_type_date
+  ON documents(doc_type, publication_date DESC);
 
-**Why composite indexes?**
-- Line 1-2: Fast filtering by type + date (common query pattern)
-- Line 4-5: `INCLUDE` clause adds extra columns to index (index-only scan)
+  CREATE INDEX IF NOT EXISTS idx_documents_status
+  ON documents(status)
+  WHERE status IN ('NEW', 'TEXT_EXTRACTED', 'CHUNKS_BUILT', 'FAILED');
+  ```
+  - `doc_type` + `publication_date` supports retrieval filters and recency sort.
+  - `status` partial index accelerates pipeline steps that poll for NEW/pending documents.
 
-**Index-only scan:**
-- PostgreSQL can answer query using only the index (doesn't need to read table)
-- Faster, less disk I/O
+- **Chat history / feedback:**
+  ```sql
+  CREATE INDEX IF NOT EXISTS idx_chat_messages_session
+  ON chat_messages(session_id, created_at DESC);
+
+  CREATE INDEX IF NOT EXISTS idx_chat_sessions_created
+  ON chat_sessions(created_at DESC);
+  ```
+  - Keeps chat history fetches snappy by session and orders messages newest-first.
+  - Session index helps list/recent sessions without scanning the table.
+
+- **Stats refresh:**
+  ```sql
+  ANALYZE chunks;
+  ANALYZE documents;
+  ANALYZE chat_messages;
+  ANALYZE chat_sessions;
+  ```
+  - Updates planner stats after index creation so query plans use the new indexes.
 
 ---
 
@@ -740,6 +809,8 @@ class Chunk(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
     document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    table_id = Column(BigInteger, ForeignKey("tables.id", ondelete="SET NULL"), nullable=True)
+    chart_id = Column(BigInteger, ForeignKey("charts.id", ondelete="SET NULL"), nullable=True)
     page_start = Column(Integer, nullable=True)
     page_end = Column(Integer, nullable=True)
     chunk_index = Column(Integer, nullable=False)
@@ -751,6 +822,8 @@ class Chunk(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     document = relationship("Document", back_populates="chunks")
+    table = relationship("Table", back_populates="chunks")
+    chart = relationship("Chart", back_populates="chunks")
 ```
 
 **Key fields explained:**
@@ -759,6 +832,7 @@ class Chunk(Base):
   - `nullable=True` because embeddings generated after chunks created
 - Line 88: `section_hint` - Extracted heading for UI display
 - Line 89: `text_tsv` - Precomputed full-text search vector
+- Line 83-84: `table_id`/`chart_id` - Nullable links to structured tables and chart metadata for evidence lookups
 
 **Why nullable embedding?**
 ```
@@ -865,6 +939,8 @@ class Table(Base):
     bbox = Column(JSON, nullable=True)
     accuracy = Column(Integer, nullable=True)
     caption = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    chunks = relationship("Chunk", back_populates="table")
 ```
 
 **What this stores:**
@@ -872,6 +948,7 @@ class Table(Base):
 - `structured_data` - JSON array of row dicts
 - `bbox` - Bounding box coordinates on page
 - `accuracy` - Camelot confidence score (0-100)
+- Bidirectional relationship: `Chunk.table_id` references `Table.id`, so each flattened summary chunk can pull back the exact structured rows for verification or downloads.
 
 **Example structured_data:**
 ```json
@@ -880,6 +957,25 @@ class Table(Base):
   {"Year": "2025", "GDP": "2.9%", "Inflation": "2.5%"}
 ]
 ```
+
+**Chart Model:**
+```python
+class Chart(Base):
+    __tablename__ = "charts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
+    page_number = Column(Integer, nullable=False)
+    image_metadata = Column(JSON, nullable=False)  # width/height/format/image_index
+    bbox = Column(JSON, nullable=True)
+    s3_key = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    chunks = relationship("Chunk", back_populates="chart")
+```
+
+**Why have charts?**
+- Flags large images/graphs for future multimodal RAG.
+- `chart_id` on chunks preserves provenance so evidence can point back to the exact image (with bbox and optional MinIO key).
 
 **EvalExample Model:**
 ```python
@@ -947,43 +1043,47 @@ class EvalResult(Base):
 
 ### 3.3 Database Session (`app/db/session.py`)
 
-Manages database connections.
+Manages database connections with lazy engine/session factory creation.
 
 ```python
 from contextlib import contextmanager
-from typing import Generator
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 
 from app.config import get_settings
 
-
-def default_uuid() -> UUID:
-    """Generate UUID for database defaults."""
-    import uuid
-    return uuid.uuid4()
+_engine = None
+_SessionLocal = None
 
 
-settings = get_settings()
+def _init_engine():
+    """Initialize engine and session factory once per process."""
+    global _engine, _SessionLocal
+    settings = get_settings()
+    _engine = create_engine(settings.database_url, future=True, pool_pre_ping=True)
+    _SessionLocal = sessionmaker(bind=_engine, autocommit=False, autoflush=False, future=True)
 
-# Create engine (connection pool)
-engine = create_engine(
-    settings.database_url,
-    pool_pre_ping=True,         # Test connection before use
-    pool_size=5,                # Number of persistent connections
-    max_overflow=10,            # Max additional connections
-    echo=False,                 # Log all SQL (set True for debugging)
-)
 
-# Session factory
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+def get_engine():
+    """Return a shared SQLAlchemy engine, initializing on first use."""
+    if _engine is None:
+        _init_engine()
+    return _engine
+
+
+def get_session_factory():
+    """Return a shared sessionmaker, initializing engine if needed."""
+    if _SessionLocal is None:
+        _init_engine()
+    return _SessionLocal
 
 
 @contextmanager
-def session_scope() -> Generator[Session, None, None]:
-    """Context manager for database sessions with automatic commit/rollback."""
-    session = SessionLocal()
+def session_scope():
+    """Context manager that commits on success and rolls back on error."""
+    session_factory = get_session_factory()
+    session = session_factory()
     try:
         yield session
         session.commit()
@@ -994,32 +1094,12 @@ def session_scope() -> Generator[Session, None, None]:
         session.close()
 ```
 
-**Line-by-line:**
-- Lines 19-24: `create_engine()` - Creates connection pool
-  - `pool_pre_ping=True` - Test connection health before use (handles dropped connections)
-  - `pool_size=5` - Keep 5 connections open
-  - `max_overflow=10` - Create up to 10 more if needed
-- Line 27: `sessionmaker()` - Factory for creating sessions
-  - `autocommit=False` - Manual transaction control
-  - `autoflush=False` - Don't automatically flush on query
-- Lines 30-41: `session_scope()` - Context manager pattern
-
-**Usage:**
-```python
-from app.db.session import session_scope
-
-with session_scope() as session:
-    doc = session.query(Document).filter_by(id=doc_id).first()
-    doc.status = "PROCESSED"
-    # Commit happens automatically on exit
-    # Rollback on exception
-```
-
-**Why context manager?**
-- Ensures session is always closed
-- Auto-commit on success
-- Auto-rollback on error
-- No manual try/finally needed
+**Key points:**
+- Lazy init: engine/session factory are created on first call, avoiding DB connections at import time and keeping tests/scripts light.
+- `future=True`: opts into SQLAlchemy 2.x style behavior for both engine and sessions.
+- `pool_pre_ping=True`: checks connections before use to avoid stale sockets.
+- Pool sizing uses SQLAlchemy defaults; tune via `database_url` params or env if needed.
+- `session_scope()` wraps commit/rollback/close for safe transactional use.
 
 ---
 
@@ -1663,68 +1743,21 @@ page_boundaries = [
 - Maps chunk offsets back to page numbers
 - Handles chunks spanning multiple pages
 
-#### Lines 137-215: Sliding Window
+#### Chunk loop (smart boundaries + overlap)
 
-```python
-    chunks = []
-    chunk_index = 0
-    start_pos = 0
+Key helpers:
+- `_find_paragraph_boundary(text, target_pos, window=200)` looks for nearby `\n\n` / `\n` breaks around the target position (target ≈ `max_tokens * 4.5` chars). Avoids mid-paragraph splits.
+- `_get_sentence_overlap(text, num_sentences=2)` returns the last two sentences for smoother overlap (vs word-based overlap).
+- `_detect_rba_section(chunk_text)` surfaces RBA-specific headings (Inflation, Labour Market, numbered sections) before falling back to `_extract_section_hint`.
+- `_contains_table_marker` flags table-like text for future boundary adjustments.
 
-    while start_pos < len(full_text):
-        # Calculate end position
-        end_pos = start_pos + target_chars
-
-        # Don't exceed document length
-        if end_pos >= len(full_text):
-            end_pos = len(full_text)
-            chunk_text = full_text[start_pos:]
-        else:
-            # Try to end at natural boundary
-            chunk_text = full_text[start_pos:end_pos]
-
-            # 1. Try paragraph break
-            last_para = chunk_text.rfind('\n\n')
-            if last_para > target_chars * 0.5:  # At least 50% of target
-                end_pos = start_pos + last_para
-                chunk_text = full_text[start_pos:end_pos]
-
-            # 2. Try sentence break
-            elif '. ' in chunk_text:
-                last_sentence = chunk_text.rfind('. ')
-                if last_sentence > target_chars * 0.5:
-                    end_pos = start_pos + last_sentence + 1
-                    chunk_text = full_text[start_pos:end_pos]
-
-            # 3. Try word break
-            elif ' ' in chunk_text:
-                last_space = chunk_text.rfind(' ')
-                if last_space > target_chars * 0.5:
-                    end_pos = start_pos + last_space
-                    chunk_text = full_text[start_pos:end_pos]
-
-            # 4. Fall back to character break (rare)
-```
-
-**Boundary priority:**
-1. **Paragraph break (`\n\n`)** - Best, preserves semantic units
-2. **Sentence break (`. `)** - Good, complete thoughts
-3. **Word break (` `)** - Acceptable, at least not mid-word
-4. **Character break** - Last resort, only if no spaces found
-
-**50% threshold:**
-- `if last_para > target_chars * 0.5`
-- Ensures chunk is at least half the target size
-- Prevents tiny chunks if break is found too early
-
-**Example:**
-```
-Target: 1000 chars
-Text: "..." (paragraph break at char 600)
-Result: Use 600-char chunk (60% of target, acceptable)
-
-Text: "..." (paragraph break at char 100)
-Result: Skip, use sentence break instead (10% too small)
-```
+Algorithm:
+1. Join pages into `full_text` and compute `target_chars = max_tokens * 4.5`.
+2. Use `_find_paragraph_boundary` to pick an end index near the target; if token count exceeds `max_tokens * 1.2`, tighten the window and recompute.
+3. Map the start/end offsets back to pages using precomputed boundaries.
+4. Compute `section_hint` via `_detect_rba_section(...) or _extract_section_hint(...)`.
+5. Append the chunk (if non-empty).
+6. Advance `start_idx` using the overlap sentences (if found within the current window); otherwise jump to `end_idx`.
 
 #### Lines 217-250: Page Mapping
 
@@ -1860,7 +1893,7 @@ def _extract_section_hint(text: str, max_lines: int = 5) -> str | None:
 
 ### 5.4 Table Extractor (`app/pdf/table_extractor.py`)
 
-Extracts structured tables from PDFs using Camelot.
+Extracts structured tables from PDFs using Camelot. Used by `scripts/extract_tables.py` to populate the `tables` table and create flattened table chunks that complement the text pipeline.
 
 #### Lines 1-25: Imports and Class
 
@@ -1894,6 +1927,7 @@ class TableExtractor:
         - Uses text alignment
         - Works for borderless tables
         - Fallback if lattice fails
+    Both flavors are tried; whichever returns usable tables first wins.
     """
 ```
 
@@ -1901,6 +1935,8 @@ class TableExtractor:
 - `camelot` - Best for structured tables
 - Alternative: `tabula-py` - Java dependency, harder to deploy
 - Alternative: `pdfplumber` - Good but less accurate
+- Tries `lattice` first, falls back to `stream` if nothing is found; both errors are captured and logged.
+- `_detect_headers` promotes a text-heavy first row to column headers, and `_has_numeric_content` filters out layout-only detections to keep only real data tables.
 
 #### Lines 27-50: Constructor
 
@@ -1943,37 +1979,42 @@ class TableExtractor:
                 "bbox": [x1, y1, x2, y2],
             }
         """
-        try:
-            # Extract with lattice method (grid detection)
-            tables = camelot.read_pdf(
-                str(pdf_path),
-                pages=str(page_num),
-                flavor='lattice',  # Use line detection
-                suppress_stdout=True
-            )
+        extracted = []
+        errors = []
 
-            extracted = []
+        for flavor in ("lattice", "stream"):
+            try:
+                tables = camelot.read_pdf(
+                    str(pdf_path),
+                    pages=str(page_num),
+                    flavor=flavor,
+                    suppress_stdout=True
+                )
+            except Exception as e:
+                errors.append(f"{flavor}: {e}")
+                continue
+
             for table in tables:
-                # Filter by accuracy
                 if table.accuracy < self.min_accuracy:
                     logger.debug(
                         f"Skipping table (accuracy {table.accuracy:.1f}% < {self.min_accuracy*100:.0f}%)"
                     )
                     continue
 
-                # Convert to dict format
                 extracted.append({
                     "accuracy": float(table.accuracy),
                     "data": table.df.to_dict('records'),  # List of row dicts
                     "bbox": list(table._bbox) if hasattr(table, '_bbox') else None,
                 })
 
-            logger.info(f"Extracted {len(extracted)} tables from page {page_num}")
-            return extracted
+            if extracted:
+                break  # keep first successful flavor
 
-        except Exception as e:
-            logger.error(f"Table extraction failed for page {page_num}: {e}")
-            return []
+        if not extracted and errors:
+            logger.warning(f"Table extraction failed for page {page_num}: {'; '.join(errors)}")
+
+        logger.info(f"Extracted {len(extracted)} tables from page {page_num}")
+        return extracted
 ```
 
 **Output format:**
@@ -2187,152 +2228,24 @@ POST /embeddings
 
 Generates and stores embeddings for chunks.
 
-#### Lines 1-45: Generate Missing Embeddings
+Core function:
 
 ```python
-from __future__ import annotations
-
-import logging
-from typing import List
-
-from sqlalchemy import select, update
-from sqlalchemy.orm import Session
-
-from app.db.models import Chunk, Document, DocumentStatus
-from app.embeddings.client import EmbeddingClient
-
-logger = logging.getLogger(__name__)
-
-
-def generate_missing_embeddings(
-    session: Session,
-    batch_size: int = 24
-) -> int:
-    """Generate embeddings for chunks that don't have them yet.
-
-    Args:
-        session: Database session
-        batch_size: Number of chunks to process at once
-
-    Returns:
-        Number of chunks processed
-
-    Workflow:
-        1. Find chunks with NULL embedding
-        2. Generate embeddings via API
-        3. Update chunks with vectors
-        4. Check if document is fully embedded
-        5. Update document status if complete
-    """
-    # Query chunks without embeddings
-    stmt = (
-        select(Chunk)
-        .where(Chunk.embedding == None)
-        .limit(batch_size)
-    )
-    chunks = session.execute(stmt).scalars().all()
-
-    if not chunks:
-        return 0
-
-    # Extract text from chunks
-    texts = [chunk.text for chunk in chunks]
-
-    # Generate embeddings (with retry logic)
-    client = EmbeddingClient()
-    response = client.embed(texts)
-
-    # Update chunks with embeddings
-    for chunk, vector in zip(chunks, response.vectors, strict=True):
-        chunk.embedding = vector
-
-    session.flush()
-
-    # Check which documents are now fully embedded
-    document_ids = {chunk.document_id for chunk in chunks}
-
-    for doc_id in document_ids:
-        # Count remaining NULL embeddings for this document
-        remaining = session.execute(
-            select(func.count())
-            .select_from(Chunk)
-            .where(Chunk.document_id == doc_id)
-            .where(Chunk.embedding == None)
-        ).scalar()
-
-        # If all chunks have embeddings, mark document as EMBEDDED
-        if remaining == 0:
-            session.execute(
-                update(Document)
-                .where(Document.id == doc_id)
-                .values(status=DocumentStatus.EMBEDDED.value)
-            )
-            logger.info(f"Document {doc_id} fully embedded")
-
-    return len(chunks)
+def generate_missing_embeddings(batch_size: int | None = None) -> int:
+    """Populate embeddings for chunks where the vector is null."""
+    if batch_size is None:
+        batch_size = int(os.environ.get("EMBEDDING_BATCH_SIZE", "32"))
+    ...
 ```
 
-**Line-by-line breakdown:**
+- Pulls chunks with `embedding IS NULL` in batches (default from `.env`, falls back to 32 if unset).
+- Calls `EmbeddingClient` to embed the batch, updates rows, and marks documents `EMBEDDED` when all their chunks have vectors.
+- `scripts/build_embeddings.py` orchestrates parallel batches using `EMBEDDING_BATCH_SIZE`/`EMBEDDING_PARALLEL_BATCHES` from `.env`, retries with exponential backoff, and aborts after too many consecutive failures (`--max-failures`, default 5).
 
-**Lines 34-38: Query chunks**
-```python
-stmt = (
-    select(Chunk)
-    .where(Chunk.embedding == None)
-    .limit(batch_size)
-)
-```
-- SQLAlchemy query builder
-- `Chunk.embedding == None` - Finds NULL values
-- `limit(batch_size)` - Process in batches (memory efficient)
-
-**Lines 43-47: Generate embeddings**
-```python
-texts = [chunk.text for chunk in chunks]
-client = EmbeddingClient()
-response = client.embed(texts)
-```
-- Extract text from ORM objects
-- Call embedding API (with automatic retry)
-- Get list of vectors back
-
-**Lines 49-52: Update database**
-```python
-for chunk, vector in zip(chunks, response.vectors, strict=True):
-    chunk.embedding = vector
-session.flush()
-```
-- `zip(..., strict=True)` - Ensures lists are same length
-- Assign vector to chunk (SQLAlchemy tracks change)
-- `flush()` - Write to database (without commit)
-
-**Lines 54-70: Update document status**
-```python
-for doc_id in document_ids:
-    remaining = session.execute(
-        select(func.count())
-        .select_from(Chunk)
-        .where(Chunk.document_id == doc_id)
-        .where(Chunk.embedding == None)
-    ).scalar()
-
-    if remaining == 0:
-        session.execute(
-            update(Document)
-            .where(Document.id == doc_id)
-            .values(status=DocumentStatus.EMBEDDED.value)
-        )
-```
-- Count how many chunks still need embeddings
-- If zero, document is complete
-- Update status to EMBEDDED
-
-**Why check status?**
-- UI can show processing progress
-- Scripts can filter by status
-- Prevents re-processing completed documents
-
----
+**Why batch processing?**
+- Chunking produces hundreds of chunks per document
+- Embedding API has rate limits
+- Batch reduces HTTP overhead
 
 ## 7. RAG Retrieval System
 
@@ -3328,6 +3241,7 @@ evidence_payload = [
         "score": chunk.score,
         "snippet": chunk.text[:500],
         "section_hint": chunk.section_hint,
+        "table": table_lookup.get(chunk.table_id) if chunk.table_id else None,
     }
     for chunk in chunks
 ]
@@ -3351,6 +3265,7 @@ return AnswerResponse(answer=answer_text, evidence=evidence_payload, analysis=an
 **Why this structure?**
 
 - **Lines 234-247**: Build evidence list with all metadata for UI display
+- **New table link**: When a chunk references a structured table, the payload now includes `"table": {...}` so the UI (or any downstream client) can render/download the exact JSON rows instead of relying solely on flattened text.
 - **Line 243**: Truncate snippet to 500 chars (avoid huge payloads)
 - **Lines 249-250**: Persist assistant message to DB
 - **Lines 252-258**: Emit completion event for observability
@@ -3939,6 +3854,7 @@ The evaluation framework measures RAG quality using golden example question-answ
 2. **Answer correctness**: Does answer match expected answer?
 3. **Latency**: How long did the pipeline take?
 4. **Evidence citation**: Did answer cite correct sources?
+5. **Captured payloads**: Persist the answer text and retrieved chunks on each `EvalResult` row for replay/debugging.
 
 **Line-by-line: Evaluation script**
 
@@ -4199,7 +4115,7 @@ if YEAR_FILTERS and extract_year(pdf_url) not in YEAR_FILTERS:
 
 ### 11.2 PDF Processor (`scripts/process_pdfs.py`)
 
-The processor extracts text from PDFs, cleans it, and splits into chunks.
+The processor extracts text from PDFs, cleans it, and splits prose into chunks. Table extraction now lives in `scripts/extract_tables.py` so the main pipeline can stay highly parallel, and so each Camelot-derived chunk can link back to the structured rows via `table_id`.
 
 **Line-by-line: Processing workflow**
 
@@ -4258,7 +4174,19 @@ with session_scope() as session:
         # Step 7: Update document status
         doc.status = DocumentStatus.CHUNKS_BUILT
 
-        logger.info(f"Created {len(chunks)} chunks for {doc.title}")
+### 11.3 Table Extraction (`scripts/extract_tables.py`)
+
+Because Camelot isn’t thread-safe, table extraction runs as its own stage:
+
+1. Fetch docs that have text but no tables (or force re-run).
+2. Download the PDF, run Camelot lattice + stream per page.
+3. Persist structured rows (caption, bbox, accuracy, JSON rows) to the `tables` table.
+4. Flatten each table into an enriched chunk (caption + column list + per-row sentences + inferred metric tags), append it after the existing text chunks, and record `table_id` so we can retrieve the structured data later.
+5. If new chunks were added, downgrade document status from `EMBEDDED` to `CHUNKS_BUILT` so embeddings can be regenerated.
+
+The script supports sequential mode or a small `ProcessPoolExecutor` (`--workers`, default 4). Trigger via `make tables` (add `ARGS="--force"` to refresh previously processed docs) between `make process` and `make embeddings`.
+
+        logger.info(f"Created {len(chunks)} chunks (including tables) for {doc.title}")
 ```
 
 **Why batch processing?**
@@ -4333,15 +4261,15 @@ while True:
 
 **Why loop until complete?**
 
-- **Batching**: Process 24 chunks at a time (configurable)
+- **Batching**: Uses `EMBEDDING_BATCH_SIZE` from `.env` (8 in the example) so you can tune for CPU/GPU capacity.
 - **Progress**: See real-time progress logs
 - **Resumable**: Can stop/restart anytime
 
 **Parallel processing:**
 
 ```bash
-# Process 2 batches in parallel (faster on multi-core)
-make embeddings ARGS="--batch-size 24 --parallel 2"
+# Process 2 batches in parallel (defaults from `.env`)
+make embeddings ARGS="--batch-size 8 --parallel 2"
 ```
 
 **Why parallel?**
@@ -4529,7 +4457,8 @@ make up
 # 3. Ingest data
 make crawl
 make process
-make embeddings ARGS="--batch-size 24 --parallel 2"
+make tables
+make embeddings ARGS="--batch-size 8 --parallel 2"
 
 # 4. Query via UI
 # Visit http://localhost:8501

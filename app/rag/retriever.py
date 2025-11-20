@@ -47,6 +47,7 @@ class RetrievedChunk:
     page_start: int | None
     page_end: int | None
     section_hint: str | None
+    table_id: int | None
     score: float
 
 
@@ -167,6 +168,7 @@ def retrieve_similar_chunks(
             Chunk.text,
             Chunk.page_start,
             Chunk.page_end,
+            Chunk.table_id,
             Document.doc_type,
             Document.title,
             Document.publication_date,
@@ -188,6 +190,7 @@ def retrieve_similar_chunks(
                 "chunk_id": row.id,
                 "document_id": str(row.document_id),
                 "text": row.text,
+                "table_id": row.table_id,
                 "doc_type": row.doc_type,
                 "title": row.title,
                 "publication_date": row.publication_date,
@@ -215,11 +218,12 @@ def retrieve_similar_chunks(
                 Chunk.text,
                 Chunk.page_start,
                 Chunk.page_end,
-            Document.doc_type,
-            Document.title,
-            Document.publication_date,
-            Chunk.section_hint,
-            lexical_score,
+                Chunk.table_id,
+                Document.doc_type,
+                Document.title,
+                Document.publication_date,
+                Chunk.section_hint,
+                lexical_score,
             )
             .join(Document, Chunk.document_id == Document.id)
             .where(
@@ -239,6 +243,7 @@ def retrieve_similar_chunks(
                     "chunk_id": row.id,
                     "document_id": str(row.document_id),
                     "text": row.text,
+                    "table_id": row.table_id,
                     "doc_type": row.doc_type,
                     "title": row.title,
                     "publication_date": row.publication_date,
@@ -297,6 +302,7 @@ def retrieve_similar_chunks(
                 page_start=item["page_start"],
                 page_end=item["page_end"],
                 section_hint=item["section_hint"],
+                table_id=item.get("table_id"),
                 score=final_score,
             )
         )
@@ -331,6 +337,7 @@ def retrieve_similar_chunks(
                 "page_start": chunk.page_start,
                 "page_end": chunk.page_end,
                 "section_hint": chunk.section_hint,
+                "table_id": chunk.table_id,
             }
             for chunk in results
         ]
@@ -367,6 +374,7 @@ def retrieve_similar_chunks(
                     page_start=ranked_chunk.page_start,
                     page_end=ranked_chunk.page_end,
                     section_hint=ranked_chunk.section_hint,
+                    table_id=original.table_id,
                     # Use rerank_score as final score
                     # Why? Cross-encoder is more accurate than bi-encoder for ranking
                     score=ranked_chunk.rerank_score,

@@ -15,14 +15,16 @@ Performance:
 from __future__ import annotations
 
 import argparse
+import atexit
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import List
+from typing import List, cast
 
 from sqlalchemy import select
 
+from app.config import get_settings
 from app.db.models import Chunk as ChunkModel
 from app.db.models import Document, DocumentStatus, Page
 from app.db.session import session_scope
@@ -40,7 +42,8 @@ def _fetch_pending_document_ids(limit: int) -> List[str]:
 
 
 def _download_to_temp(storage: MinioStorage, s3_key: str) -> Path:
-    with NamedTemporaryFile(delete=False) as tmp_file:
+    # camelot expects a PDF extension; suffix avoids "File format not supported"
+    with NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
         temp_path = Path(tmp_file.name)
     storage.download_file(storage.raw_bucket, s3_key, temp_path)
     return temp_path
@@ -97,9 +100,10 @@ def process_document(document_id: str, storage: MinioStorage) -> None:
     try:
         with session_scope() as session:
             document = session.get(Document, document_id)
-            if not document:
+            if document is None:
                 LOGGER.warning("Document %s not found", document_id)
                 return
+            document = cast(Document, document)
 
             LOGGER.info("Processing document %s (%s)", document_id, document.title)
 
@@ -144,7 +148,7 @@ def process_document(document_id: str, storage: MinioStorage) -> None:
             temp_path.unlink(missing_ok=True)
 
 
-def main(batch_size: int = 10, max_workers: int = 4) -> None:
+def main(batch_size: int = 16, max_workers: int = 2) -> None:
     """Process pending PDFs in parallel batches.
 
     Args:
@@ -226,18 +230,19 @@ def main(batch_size: int = 10, max_workers: int = 4) -> None:
 if __name__ == "__main__":
     # Parse command-line arguments for flexibility
     # Usage: uv run scripts/process_pdfs.py --batch-size 20 --workers 8
+    settings = get_settings()
     arg_parser = argparse.ArgumentParser(description="Process PDFs in parallel")
     arg_parser.add_argument(
         "--batch-size",
         type=int,
-        default=10,
-        help="Documents to fetch per batch (default: 10)"
+        default=settings.pdf_batch_size,
+        help=f"Documents to fetch per batch (default from .env: {settings.pdf_batch_size})"
     )
     arg_parser.add_argument(
         "--workers",
         type=int,
-        default=4,
-        help="Parallel worker threads (default: 4, recommended: 2-8)"
+        default=settings.pdf_max_workers,
+        help=f"Parallel worker threads (default from .env: {settings.pdf_max_workers})"
     )
     args = arg_parser.parse_args()
 

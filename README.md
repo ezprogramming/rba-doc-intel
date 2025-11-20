@@ -9,7 +9,7 @@ Local-first setup for crawling, processing, and querying Reserve Bank of Austral
 
 ## Quick Start
 
-1. Copy `.env.example` to `.env` and adjust credentials if needed.
+1. Copy `.env.example` to `.env` and fill in **all** required values (Postgres DSN, MinIO buckets/keys, embedding/LLM endpoints). Defaults have been removed to avoid accidental local creds leaking into containers.
 2. Build and install dependencies inside the app image:
 
    ```bash
@@ -41,10 +41,18 @@ Use the same container for operational scripts so dependencies stay consistent:
 ```bash
 make crawl
 make process
-make embeddings ARGS="--batch-size 24 --parallel 2"
+make tables            # new standalone Camelot stage (lattice + stream)
+make embeddings        # uses EMBEDDING_BATCH_SIZE / EMBEDDING_PARALLEL_BATCHES from .env
 # Or run them all sequentially:
 make refresh
 ```
+
+### Table extraction workflow
+
+- Run `make tables` (optionally with `ARGS="--force"` or `ARGS="--document-id <uuid>"`) after `make process` to extract structured Camelot tables and generate enriched table chunks. Each chunk now includes a caption, column list, row summaries, inferred metric tags, and a `table_id` back-reference so the UI/pipeline can fetch the precise structured rows (stored in the `tables` table) for citations.
+- After tuning the formatter in `scripts/extract_tables.py`, rerun `make tables ARGS="--force"` followed by `make embeddings` so the updated text is re-embedded. Evidence payloads now surface both the enriched chunk text **and** the underlying JSON rows, enabling downstream verification or CSV renders without a separate lookup.
+- Existing deployments should apply the lightweight index migration before reprocessing tables to avoid btree size errors:  
+  `docker compose exec postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /app/docker/postgres/initdb.d/05_rebuild_chunk_index.sql`
 
 ### Chunking & Retrieval Defaults
 
@@ -73,7 +81,7 @@ Whenever you tweak chunk sizes/cleaning you should wipe the old vectors so embed
 make embeddings-reset
 ```
 
-The `embeddings-reset` target nulls all `chunks.embedding` values (or pass `ARGS="--document-id <uuid>"` to target a subset) and downgrades document statuses back to `CHUNKS_BUILT`. The script then refills embeddings with smaller default batches (24 chunks, 2 workers) so the CPU embedding container stays responsive; override via `ARGS` if you have more headroom.
+The `embeddings-reset` target nulls all `chunks.embedding` values (or pass `ARGS="--document-id <uuid>"` to target a subset) and downgrades document statuses back to `CHUNKS_BUILT`. The script then refills embeddings using `EMBEDDING_BATCH_SIZE` / `EMBEDDING_PARALLEL_BATCHES` from `.env` (8 and 2 in `.env.example`) so the embedding container stays responsive; override via `ARGS="--batch-size ... --parallel ..."` if you have more headroom.
 
 Set `CRAWLER_YEAR_FILTER` in `.env` (for example, `CRAWLER_YEAR_FILTER=2024` or `CRAWLER_YEAR_FILTER=2023+` to extend through the current year) to limit ingestion to specific years while debugging. The crawler remains idempotent, so you can widen or clear the filter later and rerun the same commands to backfill the rest of the corpus.
 
@@ -101,7 +109,7 @@ Set `CRAWLER_YEAR_FILTER` in `.env` (for example, `CRAWLER_YEAR_FILTER=2024` or 
 - **Retrieval:** pgvector cosine search fused with Postgres `ts_rank_cd` keyword matches for hybrid semantic + lexical recall.
 - **LLM UX:** the Streamlit chat streams responses token-by-token from Ollama (default `qwen2.5:1.5b`), so answers start appearing while the long-form completion is still running.
 - **Feedback loop:** analysts can rate each assistant reply (thumbs up/down); ratings land in the `feedback` table and have dedicated unit tests (`tests/ui/test_feedback.py`). Feedback events also emit via the hook bus for downstream analytics.
-- **Auto-restarting embedding service:** the embedding container now runs with `restart: unless-stopped` and a conservative `EMBEDDING_BATCH_SIZE=16`, so long-running backfills survive transient OOMs on CPU hosts.
+- **Auto-restarting embedding service:** the embedding container now runs with `restart: unless-stopped` and inherits `EMBEDDING_BATCH_SIZE` from `.env` (8 in `.env.example`, override as needed); set `EMBEDDING_DEVICE=cuda|mps|cpu` to force a specific accelerator.
 
 ## FAQ
 
@@ -111,7 +119,15 @@ Keeping Postgres (and pgvector) inside Docker Compose ensures consistent extensi
 
 **How many SQL files does Postgres apply?**
 
-There are exactly two logical migrations now: `01_create_tables.sql` (base schema) and `02_create_indexes.sql` (vector/full-text indexes plus triggers). The numbering leaves room for future migrations (`03_*`, etc.) without renaming past files.
+Init scripts now include:
+- `01_create_tables.sql` (base schema)
+- `02_create_indexes.sql` (vector/full-text indexes + triggers)
+- `03_seed_eval_examples.sql` (seed golden eval queries)
+- `04_add_chunk_table_link.sql` (FK from chunks → tables)
+- `05_rebuild_chunk_index.sql` (recreate `idx_chunks_document_id` without bulky text)
+- `06_add_charts_table.sql` (chart metadata + chunk FK)
+
+These run automatically on fresh databases; apply `05_*.sql` manually on existing DBs before reprocessing table chunks to avoid oversized btrees.
 
 **What chunk sizes do enterprise teams use?**
 

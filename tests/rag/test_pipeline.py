@@ -13,6 +13,7 @@ def test_compose_analysis_handles_chunks():
         page_start=2,
         page_end=3,
         section_hint=None,
+        table_id=None,
         score=0.1,
     )
     analysis = _compose_analysis([chunk])

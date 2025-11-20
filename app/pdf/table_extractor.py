@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Any, Dict, List
 
 import fitz  # PyMuPDF
 
@@ -67,6 +67,94 @@ class TableExtractor:
         if not CAMELOT_AVAILABLE:
             logger.warning("TableExtractor initialized but camelot is not available")
 
+    def _detect_headers(self, df):
+        """Detect and extract header row from DataFrame.
+
+        Args:
+            df: pandas DataFrame from Camelot extraction
+
+        Returns:
+            DataFrame with proper column names (headers as column names if detected)
+
+        How it works:
+        - Check if first row looks like headers (mostly text, not numbers)
+        - If yes: Use first row as column names, drop it from data
+        - If no: Keep numeric column names ("0", "1", "2"...)
+        - Handles duplicate column names by adding suffixes (_1, _2, etc.)
+        """
+
+        if len(df) == 0:
+            return df
+
+        first_row = df.iloc[0].astype(str)
+
+        # Count how many cells in first row look like text headers (not numbers)
+        text_cells = sum(
+            1 for val in first_row
+            if val and not val.replace('.', '').replace('-', '').replace('%', '').isdigit()
+        )
+
+        # If >70% of first row is text, treat it as headers
+        if text_cells >= len(first_row) * 0.7:
+            # Make column names unique to avoid pandas warning
+            headers = first_row.values.tolist()
+            unique_headers = []
+            seen = {}
+
+            for header in headers:
+                if header in seen:
+                    seen[header] += 1
+                    unique_headers.append(f"{header}_{seen[header]}")
+                else:
+                    seen[header] = 0
+                    unique_headers.append(header)
+
+            df.columns = unique_headers
+            return df[1:].reset_index(drop=True)  # Skip header row from data
+
+        return df
+
+    def _has_numeric_content(self, rows: List[Dict[str, Any]], threshold: float = 0.3) -> bool:
+        """Check if table contains numerical data (not just text layout).
+
+        Args:
+            rows: List of row dictionaries from table
+            threshold: Minimum fraction of numeric cells required (default 30%)
+
+        Returns:
+            True if table has enough numeric content, False if text-only
+
+        Why this matters:
+        - Camelot sometimes detects text columns as "tables"
+        - These are layout artifacts, not real data tables
+        - Real RBA tables have numbers (forecasts, statistics, metrics)
+        """
+        if not rows:
+            return False
+
+        # Check first 10 rows (or all if fewer)
+        sample_rows = rows[:10]
+
+        numeric_cells = 0
+        total_cells = 0
+
+        for row in sample_rows:
+            for value in row.values():
+                total_cells += 1
+                str_val = str(value).strip()
+
+                # Check if cell contains a number (allow %, -, .)
+                cleaned = str_val.replace('.', '').replace('-', '')
+                cleaned = cleaned.replace('%', '').replace(',', '')
+                if str_val and cleaned.isdigit():
+                    numeric_cells += 1
+
+        if total_cells == 0:
+            return False
+
+        numeric_ratio = numeric_cells / total_cells
+        return numeric_ratio >= threshold
+
     def extract_tables(self, pdf_path: Path, page_num: int) -> List[Dict[str, Any]]:
         """Extract structured tables from a specific PDF page.
 
@@ -103,21 +191,30 @@ class TableExtractor:
             logger.debug("Camelot not available, skipping table extraction")
             return []
 
-        try:
-            # Extract tables using lattice method (grid-based tables)
-            # Why lattice? RBA tables have clear gridlines
-            # Alternative: stream method for borderless tables (less reliable)
-            tables = camelot.read_pdf(
+        def _try_extract(flavor: str) -> List[Dict[str, Any]]:
+            return camelot.read_pdf(
                 str(pdf_path),
                 pages=str(page_num),
-                flavor='lattice',  # Use gridline detection
+                flavor=flavor,
                 suppress_stdout=True  # Suppress Camelot's verbose output
             )
 
-            extracted = []
+        extracted: List[Dict[str, Any]] = []
+        errors: List[str] = []
+
+        for flavor in ("lattice", "stream"):
+            try:
+                tables = _try_extract(flavor)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{flavor}: {exc}")
+                continue
+
+            if tables.n == 0:
+                # Try stream if lattice returns no tables
+                continue
+
             for table in tables:
                 # Filter by accuracy threshold
-                # Why? Camelot sometimes detects false positives (decorative boxes, etc.)
                 if table.accuracy < self.min_accuracy:
                     logger.debug(
                         f"Skipping table on page {page_num} "
@@ -125,26 +222,39 @@ class TableExtractor:
                     )
                     continue
 
-                # Convert DataFrame to dict format for JSON storage
-                # Why to_dict('records')? Creates list of row dicts, easy to query
+                # Apply header detection to get meaningful column names
+                df_with_headers = self._detect_headers(table.df)
+                rows = df_with_headers.to_dict('records')
+
+                # Filter out text-only tables (false positives)
+                if not self._has_numeric_content(rows):
+                    logger.debug(
+                        f"Skipping text-only table on page {page_num} "
+                        f"(no numeric content detected)"
+                    )
+                    continue
+
                 extracted.append({
                     "accuracy": float(table.accuracy),
-                    "data": table.df.to_dict('records'),
+                    "data": rows,
                     "bbox": list(table._bbox) if hasattr(table, '_bbox') and table._bbox else None,
                 })
 
                 logger.info(
                     f"Extracted table from page {page_num} "
-                    f"({len(table.df)} rows, accuracy: {table.accuracy:.1f}%)"
+                    f"({len(rows)} rows, accuracy: {table.accuracy:.1f}%, flavor={flavor})"
                 )
 
-            return extracted
+            # Stop after first flavor that yields acceptable tables
+            if extracted:
+                break
 
-        except Exception as e:
-            # Don't fail entire PDF processing if table extraction fails
-            # Table extraction is enhancement, not critical
-            logger.warning(f"Table extraction failed for page {page_num}: {e}")
-            return []
+        if not extracted and errors:
+            logger.warning(
+                f"Table extraction failed for page {page_num}: {'; '.join(errors)}"
+            )
+
+        return extracted
 
     def detect_charts(self, page: fitz.Page) -> int:
         """Detect charts and graphs on a PDF page.

@@ -1221,8 +1221,8 @@ Cross-encoder reranking when enabled:
 5. Mark document as `EMBEDDED`
 
 **Args:**
-- `--batch-size`: Chunks per batch (default: 24)
-- `--parallel`: Concurrent batches (default: 2)
+- `--batch-size`: Chunks per batch (defaults to `EMBEDDING_BATCH_SIZE`, currently 8 via `.env`)
+- `--parallel`: Concurrent batches (defaults to `EMBEDDING_PARALLEL_BATCHES`, currently 2 via `.env`)
 - `--reset`: Wipe embeddings & downgrade doc status
 - `--document-id`: Target specific document
 
@@ -1435,16 +1435,23 @@ DATABASE_URL=postgresql+psycopg://...
 
 # MinIO
 MINIO_ENDPOINT=minio:9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
-MINIO_BUCKET_RAW_PDF=rba-raw-pdf
-MINIO_BUCKET_DERIVED=rba-derived
+MINIO_ACCESS_KEY=YOUR_MINIO_ACCESS_KEY
+MINIO_SECRET_KEY=YOUR_MINIO_SECRET_KEY
+MINIO_BUCKET_RAW_PDF=YOUR_RAW_BUCKET
+MINIO_BUCKET_DERIVED=YOUR_DERIVED_BUCKET
 
 # Embeddings
 EMBEDDING_API_BASE_URL=http://embedding:8000
-EMBEDDING_MODEL_NAME=nomic-embed-text-v1.5
-EMBEDDING_BATCH_SIZE=16
-EMBEDDING_API_TIMEOUT=120
+EMBEDDING_MODEL_NAME=nomic-ai/nomic-embed-text-v1.5
+EMBEDDING_BATCH_SIZE=8
+EMBEDDING_PARALLEL_BATCHES=2
+EMBEDDING_API_TIMEOUT=240
+
+# PDF/Table processing
+PDF_BATCH_SIZE=16
+PDF_MAX_WORKERS=2
+TABLE_BATCH_SIZE=16
+TABLE_MAX_WORKERS=4
 
 # LLM
 LLM_MODEL_NAME=qwen2.5:7b
@@ -1613,7 +1620,8 @@ make llm-pull MODEL=qwen2.5:7b
 ```bash
 make crawl
 make process
-make embeddings ARGS="--batch-size 24 --parallel 2"
+make tables
+make embeddings ARGS="--batch-size 8 --parallel 2"
 ```
 
 ### 4. **Run UI**
@@ -2054,13 +2062,14 @@ Keep this doc open alongside the code when stepping through the system; each sec
 
 ---
 
-## Database Schema (10 Tables)
+## Database Schema (11 Tables)
 
 ```
 documents          → Documents (PDFs) with status flow: NEW → TEXT_EXTRACTED → CHUNKS_BUILT → EMBEDDED
 ├── pages          → Extracted page text (raw + clean)
-├── chunks         → RAG segments (text + 768-dim embedding + section_hint)
+├── chunks         → RAG segments (text + 768-dim embedding + section_hint, optional table_id/chart_id)
 ├── tables         → Extracted table data (Camelot, JSONB)
+├── charts         → Chart/large-image metadata (bbox + image info, optional MinIO key)
 ├── eval_examples  → Test queries (gold answers, difficulty, category)
 ├── eval_runs      → Evaluation batches (config, status, metrics)
 └── eval_results   → Per-query eval result (scores, latency, error)
@@ -2077,7 +2086,7 @@ Indexes: HNSW (vector), GIN (full-text), composite (type/date, status, session)
 ## Operations Checklist
 
 ### Setup
-- [ ] Copy `.env.example` → `.env` (adjust if needed)
+- [ ] Copy `.env.example` → `.env` (fill all required DB/MinIO/embedding/LLM values)
 - [ ] `make bootstrap`
 
 ### Start Services
@@ -2090,7 +2099,8 @@ make llm-pull MODEL=qwen2.5:7b
 ```bash
 make crawl
 make process
-make embeddings ARGS="--batch-size 24 --parallel 2"
+make tables
+make embeddings ARGS="--batch-size 8 --parallel 2"
 ```
 
 ### Run UI
@@ -2133,14 +2143,21 @@ make finetune
    - Fetches pending PDFs from MinIO
    - PyMuPDF → extract pages (raw text)
    - Cleaner → remove headers/footers (RBA-specific patterns)
-   - Chunker → recursive split (768 tokens, 15% overlap)
+   - Chunker → paragraph-aware split (768 tokens, sentence overlap, RBA section hints)
    - Persist `pages` + `chunks` tables
    - Update `documents` (status=CHUNKS_BUILT)
 
-3. **Embedder** (`build_embeddings.py`)
+3. **Table Extractor** (`extract_tables.py`)
+   - Downloads processed PDFs
+   - Camelot lattice + stream table detection with header/numeric filters
+   - Persist `tables` rows + flattened table chunks (with `table_id`)
+   - Downgrade doc status to CHUNKS_BUILT if new chunks added
+
+4. **Embedder** (`build_embeddings.py`)
    - Find chunks where `embedding IS NULL`
    - Call `/embeddings` API (nomic-embed-text-v1.5, 768-dim)
-   - Batch + parallel workers for speed
+   - Batch + parallel workers for speed (defaults from `.env`: batch 8, parallel 2)
+   - Retries with backoff; aborts after repeated failures
    - Update `chunks.embedding`
    - Mark document (status=EMBEDDED)
 
@@ -2208,14 +2225,19 @@ make finetune
 |----------|---------|---------|
 | `DATABASE_URL` | Required | PostgreSQL connection |
 | `MINIO_ENDPOINT` | Required | MinIO/S3 host:port |
-| `MINIO_ACCESS_KEY` | minioadmin | S3 access key |
-| `MINIO_SECRET_KEY` | minioadmin | S3 secret key |
-| `MINIO_BUCKET_RAW_PDF` | rba-raw-pdf | Raw PDFs bucket |
-| `MINIO_BUCKET_DERIVED` | rba-derived | Derived data bucket |
-| `EMBEDDING_MODEL_NAME` | nomic-embed-text-v1.5 | HF model ID |
+| `MINIO_ACCESS_KEY` | Required | S3 access key |
+| `MINIO_SECRET_KEY` | Required | S3 secret key |
+| `MINIO_BUCKET_RAW_PDF` | Required | Raw PDFs bucket |
+| `MINIO_BUCKET_DERIVED` | Required | Derived data bucket |
+| `EMBEDDING_MODEL_NAME` | nomic-ai/nomic-embed-text-v1.5 | HF model ID |
 | `EMBEDDING_API_BASE_URL` | http://embedding:8000 | Embedding service |
-| `EMBEDDING_BATCH_SIZE` | 16 | Chunks per batch |
-| `EMBEDDING_API_TIMEOUT` | 120s | HTTP timeout |
+| `EMBEDDING_BATCH_SIZE` | 8 | Chunks per batch |
+| `EMBEDDING_PARALLEL_BATCHES` | 2 | Concurrent batches |
+| `EMBEDDING_API_TIMEOUT` | 240s | HTTP timeout |
+| `PDF_BATCH_SIZE` | 16 | Docs per fetch in processor |
+| `PDF_MAX_WORKERS` | 2 | Processor threads |
+| `TABLE_BATCH_SIZE` | 16 | Docs per fetch in table extractor |
+| `TABLE_MAX_WORKERS` | 4 | Table extractor processes |
 | `LLM_MODEL_NAME` | qwen2.5:7b | Ollama model |
 | `LLM_API_BASE_URL` | http://llm:11434 | Ollama host |
 | `USE_RERANKING` | 0 (disabled) | Enable cross-encoder |
@@ -2396,7 +2418,8 @@ Use the same container for operational scripts so dependencies stay consistent:
 ```bash
 make crawl
 make process
-make embeddings ARGS="--batch-size 24 --parallel 2"
+make tables
+make embeddings ARGS="--batch-size 8 --parallel 2"
 # Or run them all sequentially:
 make refresh
 ```
@@ -2428,7 +2451,7 @@ Whenever you tweak chunk sizes/cleaning you should wipe the old vectors so embed
 make embeddings-reset
 ```
 
-The `embeddings-reset` target nulls all `chunks.embedding` values (or pass `ARGS="--document-id <uuid>"` to target a subset) and downgrades document statuses back to `CHUNKS_BUILT`. The script then refills embeddings with smaller default batches (24 chunks, 2 workers) so the CPU embedding container stays responsive; override via `ARGS` if you have more headroom.
+The `embeddings-reset` target nulls all `chunks.embedding` values (or pass `ARGS="--document-id <uuid>"` to target a subset) and downgrades document statuses back to `CHUNKS_BUILT`. The script then refills embeddings using `EMBEDDING_BATCH_SIZE` / `EMBEDDING_PARALLEL_BATCHES` from `.env` (8 and 2 by default) so the embedding container stays responsive; override via `ARGS` if you have more headroom.
 
 Set `CRAWLER_YEAR_FILTER` in `.env` (for example, `CRAWLER_YEAR_FILTER=2024`) to limit ingestion to specific years while debugging. The crawler remains idempotent, so you can widen or clear the filter later and rerun the same commands to backfill the rest of the corpus.
 
@@ -2456,7 +2479,7 @@ Set `CRAWLER_YEAR_FILTER` in `.env` (for example, `CRAWLER_YEAR_FILTER=2024`) to
 - **Retrieval:** pgvector cosine search fused with Postgres `ts_rank_cd` keyword matches for hybrid semantic + lexical recall.
 - **LLM UX:** the Streamlit chat streams responses token-by-token from Ollama (default `qwen2.5:1.5b`), so answers start appearing while the long-form completion is still running.
 - **Feedback loop:** analysts can rate each assistant reply (thumbs up/down); ratings land in the `feedback` table and have dedicated unit tests (`tests/ui/test_feedback.py`). Feedback events also emit via the hook bus for downstream analytics.
-- **Auto-restarting embedding service:** the embedding container now runs with `restart: unless-stopped` and a conservative `EMBEDDING_BATCH_SIZE=16`, so long-running backfills survive transient OOMs on CPU hosts.
+- **Auto-restarting embedding service:** the embedding container now runs with `restart: unless-stopped` and inherits `EMBEDDING_BATCH_SIZE` from `.env` (8 in the example); set `EMBEDDING_DEVICE=cuda|mps|cpu` to force a specific accelerator.
 
 ## FAQ
 

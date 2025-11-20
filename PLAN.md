@@ -61,3 +61,11 @@ All phases (0-5) have been completed and implemented via **Makefile targets**. T
 - **ML engineering**: `make export-feedback`, `make finetune`
 
 For detailed line-by-line code explanations of the complete implementation, see **`LEARN.md`**.
+
+### Maintenance Notes
+- Added `docker/postgres/initdb.d/05_rebuild_chunk_index.sql` to drop/recreate `idx_chunks_document_id` without the bulky `text` column. Apply it on existing databases before re-running `make tables` so large table chunks no longer exceed the btree page limit.
+
+## Future Enhancements – Table Handling
+- **Table-aware retrieval scoring**: leverage the newly stored `table_id` metadata to boost or filter results (e.g., queries mentioning “Table” or “data” default to the structured rows first) and expose table-aware filters in the UI.
+- **Structured follow-up path**: once a table chunk is retrieved, fetch the corresponding row(s) from `tables.structured_data` to verify numbers or render CSV attachments. The backend already exposes actual table payloads in the evidence response; next step is to surface them in the UI.
+- **Table-specialized embeddings (optional)**: if numeric QA becomes critical, add a secondary embedding flow that indexes each row (or row summary) with a tabular-friendly model (Voyage-lite-table, OpenAI text-embedding-3-large). Combine those scores with the default chunk retriever for higher-quality answers.

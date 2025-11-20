@@ -32,7 +32,8 @@ rba-doc-intel/
 │   │   ├── parser.py            # PyMuPDF text extraction per page
 │   │   ├── cleaner.py           # Header/footer removal & normalization
 │   │   ├── chunker.py           # Paragraph-aware recursive chunking (768-token)
-│   │   └── table_extractor.py   # Optional table/chart detection (Camelot)
+│   │   ├── table_extractor.py   # Camelot lattice+stream extraction + metadata
+│   │   └── chart_extractor.py   # Heuristic chart/image detector (PyMuPDF)
 │   ├── embeddings/               # Embedding generation & indexing
 │   │   ├── client.py            # HTTP client for embedding API
 │   │   └── indexer.py           # Batch embedding backfill logic
@@ -50,6 +51,7 @@ rba-doc-intel/
 ├── scripts/                      # Operational CLI scripts
 │   ├── crawler_rba.py           # RBA PDF discovery & ingestion
 │   ├── process_pdfs.py          # Extract text → chunks (parallel workers)
+│   ├── extract_tables.py        # Camelot table extraction + table chunks
 │   ├── build_embeddings.py      # Generate embeddings with backfill (parallel)
 │   ├── refresh_pdfs.py          # End-to-end convenience wrapper
 │   ├── debug_dump.py            # Quick stats (doc/chunk/session counts)
@@ -132,14 +134,15 @@ class Settings:
 |-------|---------|-----------|
 | **Document** | High-level PDF record | id (UUID), source_system, s3_key, doc_type, publication_date, status, content_hash |
 | **Page** | Extracted page text | document_id (FK), page_number, raw_text, clean_text |
-| **Chunk** | RAG text segments | document_id (FK), text, embedding (VECTOR 768), section_hint, page_start/end |
+| **Chunk** | RAG text segments | document_id (FK), text, embedding (VECTOR 768), section_hint, page_start/end, table_id?, chart_id? |
 | **ChatSession** | User conversation | id (UUID), created_at, metadata_json |
 | **ChatMessage** | Turn in conversation | session_id (FK), role, content, metadata_json |
 | **Feedback** | User ratings | chat_message_id (FK), score (1/-1), comment, tags |
 | **EvalExample** | Test queries | query, gold_answer, difficulty, category |
 | **EvalRun** | Eval session | config, status, summary_metrics |
 | **EvalResult** | Result per query | eval_run_id (FK), eval_example_id (FK), llm_answer, scores |
-| **Table** | Extracted tables | document_id (FK), page_number, structured_data (JSONB) |
+| **Table** | Extracted tables | document_id (FK), page_number, structured_data (JSONB) — also flattened into retrieval chunks |
+| **Chart** | Chart/large-image metadata | document_id (FK), page_number, image_metadata (JSONB), bbox?, s3_key? |
 
 **Status Flow:**
 ```
@@ -193,12 +196,13 @@ Removes headers/footers and normalizes text:
 **Output:** Clean pages with paragraph structure preserved
 
 #### Chunker (`chunker.py`)
-Recursive splitting with overlap:
+Paragraph-aware, section-aware splitting with sentence overlap:
 
-- **Strategy:** Split on paragraph → sentence → word boundaries
-- **Max chunk size:** 768 tokens (~3,500 chars)
-- **Overlap:** 15% (default) for context continuity
-- **Section hints:** Extracts heading from first 200 chars of chunk
+- **Strategy:** Split on paragraph → sentence → word boundaries; avoid mid-paragraph breaks via `_find_paragraph_boundary`.
+- **Max chunk size:** 768 tokens (~3,500 chars) with a 20% tolerance; hard splits tighten the boundary window.
+- **Overlap:** Last two sentences are reused for continuity (better than word overlap).
+- **Section hints:** Detects RBA headings (Inflation, Labour Market, numbered sections) before falling back to generic hints.
+- **Table-aware marker:** Detects table-like text to avoid mid-table splits (boundary tuning can be extended).
 
 ```python
 def chunk_pages(
@@ -209,7 +213,18 @@ def chunk_pages(
 ```
 
 #### Table Extractor (`table_extractor.py`)
-Optional Camelot-based table detection and JSONB storage.
+Camelot-based table detection (lattice + stream) with quality filters:
+
+- Tries lattice first, falls back to stream if no tables are found.
+- Detects header rows automatically and rejects text-only false positives (requires numeric content).
+- Returns accuracy + bbox + structured rows for each table.
+- Used by `scripts/extract_tables.py` to persist structured rows to `tables` **and flatten table content into chunk text** so it can be embedded and retrieved alongside prose. Failures are logged and skipped (best-effort).
+
+#### Chart Extractor (`chart_extractor.py`)
+Heuristic detector for large images/charts:
+- Flags images larger than 200x150px and records page number, bounding box, dimensions, and format.
+- Optional image extraction for future MinIO storage.
+- Backed by the `charts` table and `chunks.chart_id` for future multimodal retrieval.
 
 ### 5. **Embeddings (`app/embeddings/`)**
 
@@ -270,7 +285,7 @@ async def answer_query(
 
 **Flow:**
 1. Embed query
-2. Retrieve top-k chunks (hybrid)
+2. Retrieve top-k chunks (hybrid) — includes flattened tables
 3. Optional rerank
 4. Build prompt (system + context + query)
 5. Call LLM (streaming)
@@ -386,16 +401,26 @@ Cross-encoder reranking when enabled:
 6. Update `documents.status` → `CHUNKS_BUILT`
 
 **Args:**
-- `--limit`: Max documents to process (default: 10)
-- `--workers`: Parallel workers (default: 4)
+- `--batch-size`: Documents per fetch (defaults to `PDF_BATCH_SIZE`, 16 in `.env.example`)
+- `--workers`: Thread workers (defaults to `PDF_MAX_WORKERS`, 2 in `.env.example`)
+
+### `extract_tables.py`
+**Table Extraction as a Separate Stage**
+
+- Runs Camelot (lattice + stream) on processed PDFs.
+- Persists structured rows to `tables` plus flattened table chunks.
+- Downgrades doc status from `EMBEDDED` to `CHUNKS_BUILT` when new chunks are added (so embeddings can be regenerated).
+- Supports sequential mode or a ProcessPool (`--workers`, defaults to `TABLE_MAX_WORKERS`, 4 in `.env.example`).
+- Respects `--batch-size` (defaults to `TABLE_BATCH_SIZE`, 16 in `.env.example`).
+- Optional `--document-id` targeting and `--force` re-extraction.
 
 ### `build_embeddings.py`
 **Embedding Backfill with Parallel Batches**
 
 **Performance:**
-- Sequential: ~50 chunks/sec
-- Parallel (4 batches): ~600 chunks/sec (12x speedup on M4)
-- GPU (NVIDIA): ~2,500 chunks/sec
+- Sequential: ~50 chunks/sec (CPU baseline)
+- Parallel batches configurable via `.env` (`EMBEDDING_PARALLEL_BATCHES`, default 2)
+- GPU (NVIDIA): >2,000 chunks/sec depending on model/device
 
 **Flow:**
 1. Find chunks where `embedding IS NULL`
@@ -403,10 +428,11 @@ Cross-encoder reranking when enabled:
 3. Each batch calls embedding API
 4. Update `chunks.embedding` column
 5. Mark document as `EMBEDDED`
+- Exponential backoff with abort after consecutive failures (default 5) if batches keep erroring (e.g., embedding API down)
 
 **Args:**
-- `--batch-size`: Chunks per batch (default: 24)
-- `--parallel`: Concurrent batches (default: 2)
+- `--batch-size`: Chunks per batch (defaults to `EMBEDDING_BATCH_SIZE`, currently 8 via `.env`)
+- `--parallel`: Concurrent batches (defaults to `EMBEDDING_PARALLEL_BATCHES`, currently 2 via `.env`)
 - `--reset`: Wipe embeddings & downgrade doc status
 - `--document-id`: Target specific document
 
@@ -619,16 +645,23 @@ DATABASE_URL=postgresql+psycopg://...
 
 # MinIO
 MINIO_ENDPOINT=minio:9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
-MINIO_BUCKET_RAW_PDF=rba-raw-pdf
-MINIO_BUCKET_DERIVED=rba-derived
+MINIO_ACCESS_KEY=YOUR_MINIO_ACCESS_KEY
+MINIO_SECRET_KEY=YOUR_MINIO_SECRET_KEY
+MINIO_BUCKET_RAW_PDF=YOUR_RAW_BUCKET
+MINIO_BUCKET_DERIVED=YOUR_DERIVED_BUCKET
 
 # Embeddings
 EMBEDDING_API_BASE_URL=http://embedding:8000
-EMBEDDING_MODEL_NAME=nomic-embed-text-v1.5
-EMBEDDING_BATCH_SIZE=16
-EMBEDDING_API_TIMEOUT=120
+EMBEDDING_MODEL_NAME=nomic-ai/nomic-embed-text-v1.5
+EMBEDDING_BATCH_SIZE=8
+EMBEDDING_PARALLEL_BATCHES=2
+EMBEDDING_API_TIMEOUT=240
+
+# PDF/Table processing
+PDF_BATCH_SIZE=16
+PDF_MAX_WORKERS=2
+TABLE_BATCH_SIZE=16
+TABLE_MAX_WORKERS=4
 
 # LLM
 LLM_MODEL_NAME=qwen2.5:7b
@@ -797,7 +830,8 @@ make llm-pull MODEL=qwen2.5:7b
 ```bash
 make crawl
 make process
-make embeddings ARGS="--batch-size 24 --parallel 2"
+make tables
+make embeddings ARGS="--batch-size 8 --parallel 2"
 ```
 
 ### 4. **Run UI**

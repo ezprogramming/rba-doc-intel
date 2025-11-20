@@ -25,27 +25,41 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 MODEL_ID = os.environ.get("MODEL_ID", "nomic-ai/nomic-embed-text-v1.5")
-BATCH_SIZE = int(os.environ.get("EMBEDDING_BATCH_SIZE", "32"))
+BATCH_SIZE = int(os.environ.get("EMBEDDING_BATCH_SIZE", "16"))
+# Optional override: cuda | mps | cpu
+PREFERRED_DEVICE = os.environ.get("EMBEDDING_DEVICE", "").strip().lower()
 
 
 def get_device() -> str:
-    """Auto-detect best available device for inference.
+    """Choose best device with optional override via EMBEDDING_DEVICE."""
+    def _warn_fallback(target: str) -> None:
+        logger.warning(f"Requested device '{target}' not available; falling back to auto-detect")
 
-    Returns:
-        Device string: 'cuda' (NVIDIA), 'mps' (Apple Silicon), or 'cpu'
-    """
+    # Honor explicit override if available
+    if PREFERRED_DEVICE:
+        if PREFERRED_DEVICE == "cuda" and torch.cuda.is_available():
+            gpu_name = torch.cuda.get_device_name(0)
+            logger.info(f"Using NVIDIA GPU (override): {gpu_name}")
+            return "cuda"
+        if PREFERRED_DEVICE == "mps" and torch.backends.mps.is_available():
+            logger.info("Using Apple Silicon GPU (override)")
+            return "mps"
+        if PREFERRED_DEVICE == "cpu":
+            logger.info("Using CPU (override)")
+            return "cpu"
+        _warn_fallback(PREFERRED_DEVICE)
+
+    # Auto-detect
     if torch.cuda.is_available():
-        device = "cuda"
         gpu_name = torch.cuda.get_device_name(0)
         logger.info(f"Using NVIDIA GPU: {gpu_name}")
-    elif torch.backends.mps.is_available():
-        device = "mps"
+        return "cuda"
+    if torch.backends.mps.is_available():
         logger.info("Using Apple Silicon GPU (Metal Performance Shaders)")
-    else:
-        device = "cpu"
-        logger.warning("No GPU detected, using CPU (this will be slower)")
+        return "mps"
 
-    return device
+    logger.warning("No GPU detected, using CPU (this will be slower)")
+    return "cpu"
 
 
 class EmbeddingRequest(BaseModel):

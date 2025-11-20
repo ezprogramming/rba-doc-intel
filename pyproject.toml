@@ -13,13 +13,15 @@ dependencies = [
     "requests>=2.31.0",
     "beautifulsoup4>=4.12.3",
     "pymupdf>=1.23.9",
+    "pypdf>=5.1.0",
     "streamlit>=1.32.0",
     "pytest>=7.4.4",
     "python-dateutil>=2.8.2",
     "tenacity>=8.2.3",
     # ML & Quality improvements
-    "camelot-py[cv]>=0.11.0",  # Table extraction from PDFs
-    "opencv-python>=4.10.0",  # Image processing for chart detection
+    "camelot-py>=0.11.0",  # Table extraction from PDFs
+    "ghostscript>=0.7",
+    "opencv-python-headless>=4.10.0",  # Image processing for chart detection
     "sentence-transformers>=2.3.0",  # Cross-encoder for reranking
     # Fine-tuning dependencies (local M4 MacBook Pro)
     "torch>=2.1.0",  # PyTorch with MPS support (Metal Performance Shaders)

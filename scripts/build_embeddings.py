@@ -25,6 +25,7 @@ from typing import Sequence
 
 from sqlalchemy import update
 
+from app.config import get_settings
 from app.db.models import Chunk, Document, DocumentStatus
 from app.db.session import session_scope
 from app.embeddings.indexer import generate_missing_embeddings
@@ -82,16 +83,17 @@ def reset_embeddings(document_ids: Sequence[str] | None = None) -> tuple[int, in
 
 
 def main(
-    batch_size: int = 24,
-    parallel_batches: int = 4,
+    batch_size: int = 16,
+    parallel_batches: int = 2,
     max_iterations: int = 1000,
     reset: bool = False,
     document_ids: Sequence[str] | None = None,
+    max_consecutive_failures: int = 5,
 ) -> None:
     """Generate embeddings for all chunks missing them.
 
     Args:
-        batch_size: Chunks per batch (default: 32, optimal for most embedding models)
+        batch_size: Chunks per batch (default: 16, optimal for most embedding models)
         parallel_batches: Number of batches to process concurrently (default: 4)
         max_iterations: Safety limit to prevent infinite loops (default: 1000)
 
@@ -122,6 +124,7 @@ def main(
 
     total_embedded = 0
     iteration = 0
+    consecutive_failures = 0
 
     LOGGER.info(
         f"Starting embedding backfill: {parallel_batches} parallel batches "
@@ -145,6 +148,7 @@ def main(
             # Collect results as they complete
             batch_total = 0
             all_zero = True  # Track if any batch found work
+            had_error = False
 
             for future in as_completed(futures):
                 batch_num = futures[future]
@@ -155,9 +159,31 @@ def main(
                         all_zero = False
                 except Exception as e:
                     LOGGER.error(f"Batch {batch_num} exception: {e}")
+                    had_error = True
 
             # Update global counter
             total_embedded += batch_total
+
+            if had_error:
+                consecutive_failures += 1
+                if consecutive_failures >= max_consecutive_failures:
+                    raise RuntimeError(
+                        "Embedding batches failed %s times in a row. "
+                        "Check that the embedding service (`make up-embedding`) is healthy"
+                        % max_consecutive_failures
+                    )
+
+                backoff_seconds = min(2 ** consecutive_failures, 30)
+                LOGGER.warning(
+                    "One or more embedding batches failed (consecutive failures: %s). "
+                    "Retrying after %.1f seconds...",
+                    consecutive_failures,
+                    backoff_seconds,
+                )
+                time.sleep(backoff_seconds)
+                continue
+
+            consecutive_failures = 0
 
             # Stop if no batch found any work
             if all_zero:
@@ -185,18 +211,19 @@ def main(
 if __name__ == "__main__":
     # Command-line interface for flexibility
     # Usage: uv run scripts/build_embeddings.py --batch-size 64 --parallel 8 --reset
+    settings = get_settings()
     parser = argparse.ArgumentParser(description="Generate embeddings in parallel")
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=24,
-        help="Chunks per batch (default: 24). Larger = more GPU memory usage"
+        default=settings.embedding_batch_size,
+        help=f"Chunks per batch (default from .env: {settings.embedding_batch_size}). Larger = more GPU memory usage"
     )
     parser.add_argument(
         "--parallel",
         type=int,
-        default=4,
-        help="Parallel batches (default: 4). More = higher throughput but more DB load"
+        default=settings.embedding_parallel_batches,
+        help=f"Parallel batches (default from .env: {settings.embedding_parallel_batches}). More = higher throughput but more DB load"
     )
     parser.add_argument(
         "--max-iter",
@@ -215,6 +242,12 @@ if __name__ == "__main__":
         dest="document_ids",
         help="Repeatable option to reset/backfill a subset of document IDs",
     )
+    parser.add_argument(
+        "--max-failures",
+        type=int,
+        default=5,
+        help="Abort after this many consecutive failed iterations (default: 5)",
+    )
     args = parser.parse_args()
 
     main(
@@ -223,4 +256,5 @@ if __name__ == "__main__":
         max_iterations=args.max_iter,
         reset=args.reset,
         document_ids=args.document_ids,
+        max_consecutive_failures=args.max_failures,
     )

@@ -4,18 +4,18 @@
 >
 > This document records the improvements made during development. All features are now **complete and production-ready**. For comprehensive line-by-line code explanations, see **`LEARN.md`** (4,500+ lines).
 >
-> All operations now use **Makefile** commands: `make bootstrap`, `make up`, `make crawl`, `make process`, `make embeddings`, `make finetune`.
+> All operations now use **Makefile** commands: `make bootstrap`, `make up`, `make crawl`, `make process`, `make tables`, `make embeddings`, `make finetune`.
 
 ---
 
 ## What Was Changed (Current Session)
 
 ### 0. Schema + Embedding Reset Enhancements
-- Docker now applies a clean migration chain: `00_extensions.sql` (pgcrypto/pgvector), `01_create_tables.sql` (documents/pages/chunks/chat/eval), `02_create_indexes.sql` (HNSW + text indexes + triggers). This keeps Postgres initialization deterministic and explains why we keep it inside Compose.
+- Docker now applies a clean migration chain: `00_extensions.sql` (pgcrypto/pgvector), `01_create_tables.sql` (documents/pages/chunks/chat/eval), `02_create_indexes.sql` (HNSW + text indexes + triggers), plus incremental updates `03_seed_eval_examples.sql`, `04_add_chunk_table_link.sql`, `05_rebuild_chunk_index.sql`, and `06_add_charts_table.sql`. This keeps Postgres initialization deterministic and explains why we keep it inside Compose.
 - Added a persisted `chunks.text_tsv` column + trigger-driven updates so lexical search never rebuilds `to_tsvector` on each query. Hybrid retrieval now simply reads the column, mirroring Pinecone/Cohere best practices (semantic weight 0.7, lexical 0.3).
 - `scripts/build_embeddings.py --reset [--document-id UUID ...]` wipes old vectors and downgrades document statuses to `CHUNKS_BUILT` before spinning up the multi-threaded backfill, satisfying the “delete old embeddings after chunk changes” requirement.
 - `scripts/finetune_lora_dpo.py` now detects CUDA/MPS once at startup, so laptops without GPUs quietly run fp32 while CUDA boxes flip to fp16 for free speedups.
-- Embedding service hardening: container runs with `restart: unless-stopped` plus conservative defaults (batch 16 in service, 24 in CLI) so CPU hosts don’t thrash during backfills.
+- Embedding service hardening: container runs with `restart: unless-stopped` and both the service + CLI inherit `EMBEDDING_BATCH_SIZE` from `.env` (8 by default), with optional `EMBEDDING_DEVICE` overrides (cuda/mps/cpu) so CPU hosts don’t thrash during backfills.
 - Added a hook bus (`app/rag/hooks.py`) with default logging subscribers and wired it into `answer_query()` + the Streamlit feedback loop; downstream tooling can now listen for lifecycle events without touching core code.
 
 ### 1. Text Cleaner Enhancement (app/pdf/cleaner.py)
@@ -42,31 +42,24 @@ return " ".join(lines).replace("\n ", "\n\n")
 - Result: 2,303 chunks for 14 documents
 
 **After (current prod):**
-- ✅ 768-token cap with ~15 % overlap → respects embedding latency while keeping rich context
-- ✅ Recursive splits (paragraph → sentence → word) + paragraph-preserving cleaner
-- ✅ Section header extraction (`section_hint`) saved to Postgres for UI/Evidence (regex now covers uppercase headings + multi-level numbering, resulting in far richer evidence breadcrumbs)
+- ✅ Paragraph-aware boundaries via `_find_paragraph_boundary` to avoid mid-thought splits.
+- ✅ Sentence-based overlap (last 2 sentences) instead of naive word overlap for smoother context handoff.
+- ✅ RBA-specific heading detection (Inflation, Labour Market, numbered sections) before falling back to generic `_extract_section_hint`.
+- ✅ Table markers detected (pipes/keywords) for future smart table-boundary handling.
 - Result: 526 chunks for 14 documents (**77 % fewer chunks than the original baseline**)
 
-**Code highlights:**
-```python
-def chunk_pages(
-    clean_pages: List[str],
-    max_tokens: int = 768,
-    overlap_pct: float = 0.15  # Was 0.75
-) -> List[Chunk]:
-    # Try paragraph break first
-    last_para = chunk_candidate.rfind("\n\n")
-    if last_para > target_chars * 0.5:
-        end_idx = start_idx + last_para + 2
-    else:
-        # Try sentence break
-        last_sent = chunk_candidate.rfind(". ")
-        ...
-```
+**Code highlights:** tighter char windows (~4.5 chars/token), paragraph scanning around target boundaries, and an overlap helper `_get_sentence_overlap` to maintain complete sentences between chunks.
+
+### 3. Table Extraction Pipeline (`scripts/extract_tables.py`)
+
+- Standalone stage that runs after text chunking, so Camelot work (lattice + stream) doesn't block the main processor.
+- Header detection + numeric-content filters curb false positives; accepted tables are persisted to `tables` and flattened into enriched chunks with metrics/captions.
+- Each chunk records `table_id` (and the pipeline now pulls structured rows back into `answer_query` evidence payloads) so UIs can render the exact table JSON.
+- Accepts `--batch-size`/`--workers` defaults from `.env` and downgrades documents from `EMBEDDED` → `CHUNKS_BUILT` when table chunks change, ensuring embeddings are refreshed.
 
 ---
 
-### 3. Enhanced RAG Pipeline (app/rag/pipeline.py)
+### 4. Enhanced RAG Pipeline (app/rag/pipeline.py)
 
 **Before:** single retrieval strategy + synchronous completions.
 
@@ -93,7 +86,7 @@ def answer_query(
 
 ---
 
-### 4. Interview Preparation Guide
+### 5. Interview Preparation Guide
 
 Created `docs/COMPLETE_PDF_RAG_INTERVIEW_GUIDE.md` - comprehensive 60+ page resource covering:
 

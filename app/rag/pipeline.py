@@ -32,7 +32,7 @@ from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
-from app.db.models import ChatMessage, ChatSession
+from app.db.models import ChatMessage, ChatSession, Table
 from app.db.session import session_scope
 from app.embeddings.client import EmbeddingClient
 from app.rag.llm_client import LLMClient
@@ -166,6 +166,7 @@ def answer_query(
 
     embedding_client = EmbeddingClient()
     llm_client = LLMClient()
+    table_lookup: dict[int, dict] = {}
 
     # Step 1: Embed query
     # Why bi-encoder? Fast encoding (single forward pass, ~5-10ms)
@@ -180,6 +181,23 @@ def answer_query(
             limit=top_k,
             rerank=use_reranking,  # Enable cross-encoder reranking if requested
         )
+        table_ids = {chunk.table_id for chunk in chunks if chunk.table_id is not None}
+        if table_ids:
+            table_rows = (
+                session.query(Table)
+                .filter(Table.id.in_(table_ids))
+                .all()
+            )
+            table_lookup = {
+                table_row.id: {
+                    "table_id": table_row.id,
+                    "page_number": table_row.page_number,
+                    "accuracy": table_row.accuracy,
+                    "caption": table_row.caption,
+                    "structured_data": table_row.structured_data,
+                }
+                for table_row in table_rows
+            }
         hooks.emit(
             "rag:retrieval_complete",
             query=query,
@@ -242,6 +260,7 @@ def answer_query(
             "score": chunk.score,
             "snippet": chunk.text[:500],
             "section_hint": chunk.section_hint,
+            "table": table_lookup.get(chunk.table_id) if chunk.table_id else None,
         }
         for chunk in chunks
     ]

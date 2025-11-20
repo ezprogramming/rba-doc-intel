@@ -7,7 +7,7 @@ MODEL ?= qwen2.5:1.5b
 CMD ?= bash
 SERVICE ?= app
 
-.PHONY: help bootstrap up up-detached up-models up-embedding ui down crawl process embeddings embeddings-reset refresh streamlit debug export-feedback finetune test lint format llm-pull logs run exec wait
+.PHONY: help bootstrap up up-detached up-models up-embedding ui down crawl process tables tables-force embeddings embeddings-reset refresh streamlit debug export-feedback finetune test lint format llm-pull logs run exec wait
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*##' Makefile | sort | awk 'BEGIN {FS = ":.*##"}; {printf "%s\t%s\n", $$1, $$2}'
@@ -39,6 +39,12 @@ crawl: ## Run scripts/crawler_rba.py inside the app container
 
 process: ## Run scripts/process_pdfs.py inside the app container
 	$(UV_RUN) scripts/process_pdfs.py $(ARGS)
+
+tables: ## Run scripts/extract_tables.py to extract structured tables
+	$(UV_RUN) scripts/extract_tables.py $(ARGS)
+
+tables-force: ## Re-extract all tables even if they already exist
+	$(UV_RUN) scripts/extract_tables.py --force
 
 embeddings: ## Run scripts/build_embeddings.py (set ARGS="--reset" to wipe vectors)
 	$(UV_RUN) scripts/build_embeddings.py $(ARGS)
