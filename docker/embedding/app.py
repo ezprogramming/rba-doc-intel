@@ -13,9 +13,10 @@ import os
 from typing import List
 
 import torch
+import torch.nn.functional as F
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer, AutoModel
 
 # Configure logging
 logging.basicConfig(
@@ -78,8 +79,28 @@ app = FastAPI(title="Local Embedding Server", version="1.1.0")
 # Detect device and load model
 DEVICE = get_device()
 logger.info(f"Loading model: {MODEL_ID}")
-model = SentenceTransformer(MODEL_ID, device=DEVICE, trust_remote_code=True)
-logger.info(f"Model loaded successfully on {DEVICE}")
+
+# Load tokenizer and model using transformers (more control than sentence-transformers)
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+model = AutoModel.from_pretrained(MODEL_ID, trust_remote_code=True).to(DEVICE)
+
+# Set model to evaluation mode (no training)
+model.eval()
+
+MAX_SEQ_LENGTH = 8192
+logger.info(f"Model loaded successfully on {DEVICE} (max_seq_length: {MAX_SEQ_LENGTH})")
+
+
+def mean_pooling(model_output, attention_mask):
+    """Mean pooling - take average of all token embeddings, ignoring padding.
+
+    This is the standard pooling strategy for BERT-based models.
+    """
+    token_embeddings = model_output[0]  # First element: token embeddings
+    input_mask_expanded = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+    return torch.sum(token_embeddings * input_mask_expanded, 1) / torch.clamp(
+        input_mask_expanded.sum(1), min=1e-9
+    )
 
 
 @app.get("/health")
@@ -112,14 +133,29 @@ def embeddings(payload: EmbeddingRequest) -> dict[str, List[EmbeddingResponse]]:
         )
 
     try:
-        # Generate embeddings with L2 normalization for better cosine similarity
-        vectors = model.encode(
+        # Tokenize with proper padding and truncation
+        # padding='longest' = pad all sequences to length of longest in batch (efficient)
+        # truncation=True = truncate sequences longer than max_length
+        encoded_input = tokenizer(
             payload.input,
-            batch_size=BATCH_SIZE,
-            convert_to_numpy=True,
-            normalize_embeddings=True,  # Enable L2 normalization
-            show_progress_bar=False
-        )
+            padding='longest',  # Dynamic padding to longest in batch
+            truncation=True,
+            max_length=MAX_SEQ_LENGTH,
+            return_tensors='pt'
+        ).to(DEVICE)
+
+        # Generate embeddings without gradient computation (faster)
+        with torch.no_grad():
+            model_output = model(**encoded_input)
+
+        # Apply mean pooling
+        embeddings = mean_pooling(model_output, encoded_input['attention_mask'])
+
+        # Normalize embeddings (L2 normalization for cosine similarity)
+        embeddings = F.normalize(embeddings, p=2, dim=1)
+
+        # Convert to list
+        vectors = embeddings.cpu().numpy()
 
         data = [
             EmbeddingResponse(embedding=vec.tolist(), index=i)

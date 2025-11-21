@@ -81,7 +81,7 @@ Whenever you tweak chunk sizes/cleaning you should wipe the old vectors so embed
 make embeddings-reset
 ```
 
-The `embeddings-reset` target nulls all `chunks.embedding` values (or pass `ARGS="--document-id <uuid>"` to target a subset) and downgrades document statuses back to `CHUNKS_BUILT`. The script then refills embeddings using `EMBEDDING_BATCH_SIZE` / `EMBEDDING_PARALLEL_BATCHES` from `.env` (8 and 2 in `.env.example`) so the embedding container stays responsive; override via `ARGS="--batch-size ... --parallel ..."` if you have more headroom.
+The `embeddings-reset` target nulls all `chunks.embedding` values (or pass `ARGS="--document-id <uuid>"` to target a subset) and downgrades document statuses back to `CHUNKS_BUILT`. The script then refills embeddings using `EMBEDDING_BATCH_SIZE` / `EMBEDDING_PARALLEL_BATCHES` from `.env` (4 and 2 for CPU-only systems) so the embedding container stays responsive; override via `ARGS="--batch-size ... --parallel ..."` if you have GPU resources.
 
 Set `CRAWLER_YEAR_FILTER` in `.env` (for example, `CRAWLER_YEAR_FILTER=2024` or `CRAWLER_YEAR_FILTER=2023+` to extend through the current year) to limit ingestion to specific years while debugging. The crawler remains idempotent, so you can widen or clear the filter later and rerun the same commands to backfill the rest of the corpus.
 
@@ -109,7 +109,7 @@ Set `CRAWLER_YEAR_FILTER` in `.env` (for example, `CRAWLER_YEAR_FILTER=2024` or 
 - **Retrieval:** pgvector cosine search fused with Postgres `ts_rank_cd` keyword matches for hybrid semantic + lexical recall.
 - **LLM UX:** the Streamlit chat streams responses token-by-token from Ollama (default `qwen2.5:1.5b`), so answers start appearing while the long-form completion is still running.
 - **Feedback loop:** analysts can rate each assistant reply (thumbs up/down); ratings land in the `feedback` table and have dedicated unit tests (`tests/ui/test_feedback.py`). Feedback events also emit via the hook bus for downstream analytics.
-- **Auto-restarting embedding service:** the embedding container now runs with `restart: unless-stopped` and inherits `EMBEDDING_BATCH_SIZE` from `.env` (8 in `.env.example`, override as needed); set `EMBEDDING_DEVICE=cuda|mps|cpu` to force a specific accelerator.
+- **Auto-restarting embedding service:** the embedding container now runs with `restart: unless-stopped` and inherits `EMBEDDING_BATCH_SIZE` from `.env` (4 for CPU-only systems, increase for GPU); set `EMBEDDING_DEVICE=cuda|mps|cpu` to force a specific accelerator. See `docs/PARALLEL_PROCESSING.md` for production tuning.
 
 ## FAQ
 
@@ -139,7 +139,11 @@ Industry playbooks (Pinecone’s 2024 “Chunking Strategies”, Cohere’s 2023
 
 **How long does a backfill take for 768–900 token chunks?**
 
-On an M-series Mac the FastAPI embedding service processes ~120 chunks/second at batch size 32. The current corpus (≈500 chunks) re-embeds in under a minute; doubling chunk length to 900 tokens typically adds ~15 % latency because payloads get larger, but parallel batches keep total wall-clock under two minutes.
+Performance varies significantly by hardware:
+- **CPU-only** (stable config: batch=4, parallel=2): ~0.28 chunks/sec. A corpus of 2,587 chunks takes ~2.6 hours.
+- **GPU** (e.g., batch=32, parallel=8): ~120 chunks/sec. The same corpus embeds in under a minute.
+
+For CPU systems, the conservative batch sizes prevent memory exhaustion and server crashes. See `docs/PARALLEL_PROCESSING.md` for detailed tuning guidance.
 
 ## Testing & Linting
 
