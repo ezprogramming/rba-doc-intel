@@ -36,8 +36,25 @@ def _download_to_temp(storage: MinioStorage, s3_key: str) -> Path:
 
 
 def _normalize_header(label: str, index: int) -> str:
+    """Normalize table header while preserving important information.
+
+    Improvements:
+    - Preserve multi-word headers (don't truncate)
+    - Keep special chars like %, $, year indicators
+    - Clean only excessive whitespace/punctuation
+    - Better fallback naming
+    """
+    # Remove excessive whitespace and edge punctuation
     cleaned = (label or "").strip(" :\n\t")
-    return cleaned or f"Column {index + 1}"
+
+    # Preserve internal structure (don't replace multiple spaces)
+    cleaned = " ".join(cleaned.split())
+
+    # Better fallback: use original index-based name if empty
+    if not cleaned:
+        return f"Col_{index}"
+
+    return cleaned
 
 
 def _format_row_sentence(row: dict, headers: List[str]) -> str:
@@ -50,17 +67,19 @@ def _format_row_sentence(row: dict, headers: List[str]) -> str:
     return "; ".join(parts)
 
 
-def _table_to_text(table: dict, max_rows: int = 20) -> tuple[str, List[str]]:
-    """Convert table to semantic, LLM-friendly text format.
+def _table_to_text(table: dict, max_rows: int = 50, format_style: str = "hybrid") -> tuple[str, List[str]]:
+    """Convert table to precise, structured format with multiple rendering options.
 
-    Transform from row-by-row format to natural language:
-    Before: "Row 1: 0: GDP; 1: 1.6; 2: 2.3"
-    After:  "GDP — Jun 2024: 1.6%, Dec 2024: 2.3%"
+    Format styles:
+    - 'semantic': Natural language (GDP — Jun 2024: 1.6%, Dec 2024: 2.3%)
+    - 'markdown': Markdown table format (preserves exact structure)
+    - 'hybrid': Both markdown + semantic summary (default)
 
-    Why semantic format?
-    - More natural for LLM reasoning
-    - Preserves metric-value relationships
-    - Easier to answer "What is X in Y?" questions
+    Improvements:
+    - Increased max_rows from 20 to 50 (less truncation)
+    - Preserves exact numeric precision
+    - Better header detection (multi-word, special chars)
+    - Markdown format option for exact structure preservation
     """
     rows = table.get("data") or []
     if not rows:
@@ -80,43 +99,67 @@ def _table_to_text(table: dict, max_rows: int = 20) -> tuple[str, List[str]]:
     if caption:
         line_items.append(f"{caption}")
     elif headers and len(headers) > 1:
-        # Try to infer table purpose from headers
         line_items.append("Table Data")
 
     line_items.append(f"(Page {page_num}, {accuracy}% accuracy)\n")
 
-    # Detect metric column (usually first column, contains labels not numbers)
-    # For RBA tables: First column = metric name (GDP, Inflation, etc.)
-    # Other columns = periods/values (Jun 2024, Dec 2024, etc.)
-    metric_col = raw_headers[0] if raw_headers else None
-    value_cols = raw_headers[1:] if len(raw_headers) > 1 else []
+    # MARKDOWN FORMAT - preserves exact structure
+    if format_style in ("markdown", "hybrid"):
+        # Header row
+        header_line = "| " + " | ".join(headers) + " |"
+        line_items.append(header_line)
+        # Separator
+        separator = "| " + " | ".join(["---"] * len(headers)) + " |"
+        line_items.append(separator)
 
-    # Format each row as "Metric — value1, value2, value3..."
-    for row in rows[:max_rows]:
-        metric = str(row.get(metric_col, "")).strip()
+        # Data rows
+        for row in rows[:max_rows]:
+            cells = []
+            for h in raw_headers:
+                val = str(row.get(h, "")).strip()
+                cells.append(val or "—")
+            row_line = "| " + " | ".join(cells) + " |"
+            line_items.append(row_line)
 
-        # Skip empty rows
-        if not metric:
-            continue
+        if len(rows) > max_rows:
+            line_items.append(f"\n... ({len(rows) - max_rows} more rows)")
 
-        # Collect values from other columns
-        values = []
-        for col in value_cols:
-            val = str(row.get(col, "")).strip()
-            if val:
-                # Format: "Column: value"
-                col_name = str(col)
-                values.append(f"{col_name}: {val}")
+        # Add blank line between formats
+        if format_style == "hybrid":
+            line_items.append("\n**Semantic Summary:**")
 
-        # Create semantic line
-        if values:
-            line_items.append(f"{metric} — {', '.join(values)}")
-        else:
-            # Single-column table (rare)
-            line_items.append(f"• {metric}")
+    # SEMANTIC FORMAT - for LLM reasoning
+    if format_style in ("semantic", "hybrid"):
+        # Detect metric column (usually first column)
+        metric_col = raw_headers[0] if raw_headers else None
+        value_cols = raw_headers[1:] if len(raw_headers) > 1 else []
 
-    if len(rows) > max_rows:
-        line_items.append(f"\n... ({len(rows) - max_rows} more rows)")
+        # Format each row as "Metric — value1, value2, value3..."
+        for row in rows[:max_rows]:
+            metric = str(row.get(metric_col, "")).strip()
+
+            # Skip empty rows
+            if not metric:
+                continue
+
+            # Collect values from other columns
+            values = []
+            for col in value_cols:
+                val = str(row.get(col, "")).strip()
+                if val:
+                    # Preserve numeric precision - don't truncate
+                    col_name = str(col)
+                    values.append(f"{col_name}: {val}")
+
+            # Create semantic line
+            if values:
+                line_items.append(f"{metric} — {', '.join(values)}")
+            else:
+                # Single-column table (rare)
+                line_items.append(f"• {metric}")
+
+        if len(rows) > max_rows and format_style != "hybrid":
+            line_items.append(f"\n... ({len(rows) - max_rows} more rows)")
 
     return "\n".join(line_items), headers
 
@@ -180,7 +223,7 @@ def _extract_tables_from_pdf(pdf_path: Path, page_count: int) -> List[dict]:
                     "data": table.get("data", []),
                     "bbox": table.get("bbox"),
                     "accuracy": int(accuracy_val) if accuracy_val is not None else None,
-                    "caption": None,
+                    "caption": table.get("caption"),  # Use extracted caption from table_extractor
                 }
             )
     return tables
@@ -192,6 +235,15 @@ def _persist_tables_and_chunks(document_id: str, tables: List[dict]) -> None:
         if doc is None:
             LOGGER.warning("Document %s vanished before table persist", document_id)
             return
+
+        # Delete old table chunks first (before deleting tables)
+        # This prevents orphaned chunks with table_id = NULL
+        session.query(ChunkModel).filter(
+            ChunkModel.document_id == doc.id,
+            ChunkModel.table_id.isnot(None)
+        ).delete(synchronize_session=False)
+
+        # Now delete old tables
         session.query(Table).filter(Table.document_id == doc.id).delete(synchronize_session=False)
         session.flush()
 
@@ -267,20 +319,38 @@ def _fetch_target_documents(
 ) -> List[Tuple[str, str]]:
     with session_scope() as session:
         if document_ids:
-            stmt = select(Document.id, Document.s3_key).where(Document.id.in_(document_ids))
+            stmt = (
+                select(Document.id, Document.s3_key)
+                .where(Document.id.in_(document_ids))
+                .with_for_update(skip_locked=True)
+            )
         else:
             exists_tables = (
                 select(Table.id)
                 .where(Table.document_id == Document.id)
                 .exists()
             )
-            stmt = select(Document.id, Document.s3_key).where(
-                Document.status.in_(
-                    [DocumentStatus.CHUNKS_BUILT.value, DocumentStatus.EMBEDDED.value]
+
+            if force:
+                # Force mode: can process any doc (before or after embeddings)
+                stmt = (
+                    select(Document.id, Document.s3_key)
+                    .where(
+                        Document.status.in_(
+                            [DocumentStatus.CHUNKS_BUILT.value, DocumentStatus.EMBEDDED.value]
+                        )
+                    )
                 )
-            )
-            if not force:
-                stmt = stmt.where(~exists_tables)
+            else:
+                # Incremental mode: only process docs before embeddings
+                # This prevents accidentally invalidating embeddings
+                stmt = (
+                    select(Document.id, Document.s3_key)
+                    .where(Document.status == DocumentStatus.CHUNKS_BUILT.value)
+                    .where(~exists_tables)
+                )
+
+            stmt = stmt.with_for_update(skip_locked=True)
         stmt = stmt.limit(limit)
         return [(str(row[0]), row[1]) for row in session.execute(stmt)]
 
@@ -294,40 +364,59 @@ def run_pipeline(
     storage_warning = "Processing tables with %s workers"
     LOGGER.info(storage_warning, workers)
 
-    while True:
-        targets = _fetch_target_documents(batch_size, document_ids, force)
-        if not targets:
-            LOGGER.info("No documents pending table extraction.")
-            break
+    # When force=True or specific docs requested, fetch ALL targets once to avoid infinite loop
+    # Otherwise, fetch in batches and loop until queue is empty
+    if force or document_ids:
+        all_targets = _fetch_target_documents(limit=10000, document_ids=document_ids, force=force)
+        if not all_targets:
+            LOGGER.info("No documents found for table extraction.")
+            return
+        LOGGER.info("Force mode: processing all %s documents in batches of %s", len(all_targets), batch_size)
 
-        LOGGER.info("Processing table batch of %s documents", len(targets))
-        completed = 0
+        # Process in batches
+        for batch_start in range(0, len(all_targets), batch_size):
+            targets = all_targets[batch_start:batch_start + batch_size]
+            _process_batch(targets, workers)
+    else:
+        # Incremental mode: fetch and process new documents until queue is empty
+        while True:
+            targets = _fetch_target_documents(batch_size, document_ids=None, force=False)
+            if not targets:
+                LOGGER.info("No documents pending table extraction.")
+                break
+            _process_batch(targets, workers)
 
-        if workers <= 1:
-            for doc_id, s3_key in targets:
-                _, tables = process_document(doc_id, s3_key)
-                if tables:
+
+def _process_batch(targets: List[Tuple[str, str]], workers: int) -> None:
+    """Process a batch of documents for table extraction."""
+    LOGGER.info("Processing table batch of %s documents", len(targets))
+    completed = 0
+
+    if workers <= 1:
+        for doc_id, s3_key in targets:
+            _, tables = process_document(doc_id, s3_key)
+            # Always persist, even with 0 tables (prevents infinite loop)
+            _persist_tables_and_chunks(doc_id, tables)
+            if tables:
+                completed += 1
+    else:
+        with ProcessPoolExecutor(max_workers=workers) as executor:
+            future_to_doc = {
+                executor.submit(process_document, doc_id, s3_key): doc_id
+                for doc_id, s3_key in targets
+            }
+            for future in as_completed(future_to_doc):
+                doc_id = future_to_doc[future]
+                try:
+                    _, tables = future.result()
+                    # Always persist, even with 0 tables (prevents infinite loop)
                     _persist_tables_and_chunks(doc_id, tables)
-                    completed += 1
-        else:
-            with ProcessPoolExecutor(max_workers=workers) as executor:
-                future_to_doc = {
-                    executor.submit(process_document, doc_id, s3_key): doc_id
-                    for doc_id, s3_key in targets
-                }
-                for future in as_completed(future_to_doc):
-                    doc_id = future_to_doc[future]
-                    try:
-                        _, tables = future.result()
-                        if tables:
-                            _persist_tables_and_chunks(doc_id, tables)
-                            completed += 1
-                    except Exception as exc:  # noqa: BLE001
-                        LOGGER.error("Table extraction failed for %s: %s", doc_id, exc)
+                    if tables:
+                        completed += 1
+                except Exception as exc:  # noqa: BLE001
+                    LOGGER.error("Table extraction failed for %s: %s", doc_id, exc)
 
-        LOGGER.info("Batch complete. Tables extracted for %s/%s documents", completed, len(targets))
-        if document_ids:
-            break
+    LOGGER.info("Batch complete. Tables extracted for %s/%s documents", completed, len(targets))
 
 
 def main() -> None:

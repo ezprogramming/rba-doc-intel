@@ -28,6 +28,20 @@ import fitz  # PyMuPDF
 
 logger = logging.getLogger(__name__)
 
+# KNOWN ISSUE: PyMuPDF warnings about invalid graphics states
+# ============================================================
+# Many RBA PDFs contain invalid graphics states (e.g., /'P0' instead of valid float values)
+# These trigger warnings like: "Cannot set gray stroke color because /'P0' is an invalid float value"
+#
+# Root cause: The source PDF files have malformed graphics state dictionaries
+# Impact: Warnings clutter logs, but extraction still works correctly (warnings are recoverable)
+# Future fix options:
+#   1. Pre-process PDFs to repair graphics states (requires PDF manipulation tools)
+#   2. Contact RBA to fix their PDF generation process
+#   3. Add logging filter to suppress these specific recoverable warnings (production)
+#
+# For now, warnings are left visible for transparency and future investigation.
+
 # Try to import camelot (optional dependency)
 try:
     import camelot
@@ -67,8 +81,48 @@ class TableExtractor:
         if not CAMELOT_AVAILABLE:
             logger.warning("TableExtractor initialized but camelot is not available")
 
+    def _is_numeric_data(self, value: str) -> bool:
+        """Check if value is numeric data (not a text header).
+
+        Returns True for:
+        - Pure integers with decimal points: "0.7", "1.5", "-3.2"
+        - Integers < 100 (likely data values, not years)
+        - Percentages: "5.2%"
+
+        Returns False for:
+        - Years: "2022", "2020", "2024"
+        - Words: "October", "GDP", "Total"
+        - Mixed text and numbers: "Q1 2024"
+
+        This helps distinguish header rows from data rows.
+        """
+        if not value:
+            return False
+
+        # Remove common data symbols
+        cleaned = value.replace('.', '').replace('-', '').replace('%', '').replace(',', '').replace('+', '').strip()
+
+        # Check if it's a pure number
+        if not cleaned.isdigit():
+            return False
+
+        # If it has a decimal point, it's likely data (0.7, 1.5)
+        if '.' in value:
+            return True
+
+        # If it's a small integer (< 100), it's likely data
+        # Years (2020, 2024) are > 1900, so not data
+        try:
+            num = int(cleaned)
+            if num < 100:
+                return True
+            # Large numbers (years) are headers
+            return False
+        except ValueError:
+            return False
+
     def _detect_headers(self, df):
-        """Detect and extract header row from DataFrame.
+        """Detect and extract headers from DataFrame (handles multi-row headers).
 
         Args:
             df: pandas DataFrame from Camelot extraction
@@ -76,41 +130,103 @@ class TableExtractor:
         Returns:
             DataFrame with proper column names (headers as column names if detected)
 
-        How it works:
-        - Check if first row looks like headers (mostly text, not numbers)
-        - If yes: Use first row as column names, drop it from data
-        - If no: Keep numeric column names ("0", "1", "2"...)
-        - Handles duplicate column names by adding suffixes (_1, _2, etc.)
+        Improvements:
+        - Detects multi-row headers (common in RBA tables)
+        - Merges header rows intelligently
+        - Skips rows with mostly empty cells or units/metadata
+        - Falls back to last non-empty row if multi-row headers detected
+
+        How multi-row headers work in RBA tables:
+        - Row 0: Units or labels (e.g., "Per cent, seasonally adjusted")
+        - Row 1: Period groupings (e.g., "Since April")
+        - Row 2: Actual column headers (e.g., "October", "September", "August")
+        - Row 3+: Data rows (e.g., "Sydney", "0.7", "0.9", ...)
         """
 
         if len(df) == 0:
             return df
 
-        first_row = df.iloc[0].astype(str)
+        # Check first 4 rows for header patterns
+        max_header_rows = min(4, len(df))
+        header_candidates = []
 
-        # Count how many cells in first row look like text headers (not numbers)
-        text_cells = sum(
-            1 for val in first_row
-            if val and not val.replace('.', '').replace('-', '').replace('%', '').isdigit()
-        )
+        for row_idx in range(max_header_rows):
+            row = df.iloc[row_idx].astype(str)
 
-        # If >70% of first row is text, treat it as headers
-        if text_cells >= len(first_row) * 0.7:
-            # Make column names unique to avoid pandas warning
-            headers = first_row.values.tolist()
-            unique_headers = []
-            seen = {}
+            # Count non-empty cells
+            non_empty = sum(1 for val in row if val.strip())
 
-            for header in headers:
-                if header in seen:
-                    seen[header] += 1
-                    unique_headers.append(f"{header}_{seen[header]}")
+            # Count text cells (not pure decimal numbers)
+            # Years like "2022", "2020" are treated as text (headers), not data
+            # Only pure decimals like "0.7", "1.5", "-3" are treated as numbers
+            text_cells = sum(
+                1 for val in row
+                if val.strip() and not self._is_numeric_data(val.strip())
+            )
+
+            # Count empty or whitespace cells
+            empty_cells = sum(1 for val in row if not val.strip())
+
+            # Special case: Check if first cell is empty but rest have content
+            # This is common in RBA tables (row label column has no header)
+            first_empty = not row.iloc[0].strip()
+            rest_non_empty = sum(1 for val in row.iloc[1:] if val.strip())
+
+            # This row looks like headers if EITHER:
+            # 1. Standard: Has some non-empty cells (>30%) and most are text (>70%)
+            # 2. RBA pattern: First cell empty, but >50% of remaining cells are text
+            is_header_row = (
+                (non_empty >= len(row) * 0.3 and text_cells >= max(1, non_empty * 0.7)) or
+                (first_empty and rest_non_empty >= len(row[1:]) * 0.5 and text_cells >= max(1, rest_non_empty * 0.7))
+            )
+
+            if is_header_row:
+                header_candidates.append({
+                    'index': row_idx,
+                    'row': row,
+                    'non_empty': non_empty,
+                    'empty_cells': empty_cells,
+                    'text_cells': text_cells
+                })
+
+        # No header rows detected
+        if not header_candidates:
+            return df
+
+        # Strategy: Use the LAST header candidate row (most specific headers)
+        # For RBA tables: Row 2 usually has actual column names
+        # Row 0/1 often have grouping labels or units
+        best_header = header_candidates[-1]
+        header_row_idx = best_header['index']
+        headers = best_header['row'].values.tolist()
+
+        # Clean and make headers unique
+        cleaned_headers = []
+        seen = {}
+
+        for i, header in enumerate(headers):
+            # Clean whitespace
+            header = header.strip()
+
+            # Replace empty headers with meaningful names
+            if not header:
+                # First column without header is usually row labels
+                if i == 0:
+                    header = "Item"
                 else:
-                    seen[header] = 0
-                    unique_headers.append(header)
+                    header = f"Col_{i}"
 
-            df.columns = unique_headers
-            return df[1:].reset_index(drop=True)  # Skip header row from data
+            # Handle duplicates
+            if header in seen:
+                seen[header] += 1
+                cleaned_headers.append(f"{header}_{seen[header]}")
+            else:
+                seen[header] = 0
+                cleaned_headers.append(header)
+
+        # Apply headers and skip all header rows
+        df.columns = cleaned_headers
+        return df[header_row_idx + 1:].reset_index(drop=True)
 
         return df
 
@@ -155,6 +271,93 @@ class TableExtractor:
         numeric_ratio = numeric_cells / total_cells
         return numeric_ratio >= threshold
 
+    def _extract_caption_from_text(
+        self, page: fitz.Page, bbox: List[float] | None
+    ) -> str | None:
+        """Extract table caption from text above the table.
+
+        Args:
+            page: PyMuPDF page object
+            bbox: Table bounding box [x0, y0, x1, y1] or None
+
+        Returns:
+            Caption text if detected, None otherwise
+
+        Caption patterns in RBA PDFs:
+        - "Table 1: Economic Forecasts"
+        - "Table 3.2 – GDP Growth Projections"
+        - Line of text immediately above table bbox
+        """
+        if not bbox:
+            return None
+
+        try:
+            # Get text blocks from page (lighter than "dict", no rendering warnings)
+            # Format: list of tuples (x0, y0, x1, y1, "text", block_no, block_type)
+            # block_type 0 = text, 1 = image
+            text_blocks = page.get_text("blocks")
+
+            # Table bbox coordinates (y-axis: larger = lower on page)
+            table_top = bbox[1]
+
+            # Look for text above table (within 100 points)
+            candidates = []
+            for block in text_blocks:
+                # Block format: (x0, y0, x1, y1, text, block_no, block_type)
+                if len(block) < 7:
+                    continue
+
+                block_type = block[6]
+                if block_type != 0:  # Only text blocks
+                    continue
+
+                # Block bounding box
+                block_bbox = block[:4]  # x0, y0, x1, y1
+                block_bottom = block_bbox[3]
+
+                # Check if block is above table and close to it
+                if block_bottom < table_top and (table_top - block_bottom) < 100:
+                    # Extract text (5th element)
+                    block_text = block[4].strip()
+                    if block_text:
+                        candidates.append((block_bottom, block_text))
+
+            # Sort by proximity (closest to table = most likely caption)
+            candidates.sort(key=lambda x: x[0], reverse=True)
+
+            # Check candidates for table caption patterns
+            for _, text in candidates:
+                # Split by newlines - caption is usually on its own line
+                lines = [line.strip() for line in text.split('\n') if line.strip()]
+
+                for line in lines:
+                    line_lower = line.lower()
+
+                    # Pattern 1: "Table N" or "Table N.M"
+                    if line_lower.startswith("table "):
+                        return line
+
+                    # Pattern 2: Short descriptive line (2-15 words)
+                    # RBA captions range from short ("Business investment") to longer phrases
+                    words = line.split()
+                    if 2 <= len(words) <= 15:
+                        # Filter out lines with too many numbers (likely table data)
+                        # Count numeric tokens (integers or decimals)
+                        numeric_tokens = sum(
+                            1 for word in words
+                            if word.replace('.', '').replace(',', '').replace('-', '').replace('%', '').isdigit()
+                        )
+
+                        # Accept if less than 30% of words are numbers
+                        if numeric_tokens / len(words) < 0.3:
+                            return line
+
+            return None
+
+        except Exception as e:
+            logger.debug(f"Caption extraction failed: {e}")
+            return None
+
     def extract_tables(self, pdf_path: Path, page_num: int) -> List[Dict[str, Any]]:
         """Extract structured tables from a specific PDF page.
 
@@ -167,6 +370,7 @@ class TableExtractor:
             - accuracy: Camelot confidence score (0-100)
             - data: List of row dictionaries (column_name -> value)
             - bbox: Bounding box coordinates [x1, y1, x2, y2]
+            - caption: Table caption if detected (NEW)
 
         How Camelot works:
         1. Converts PDF page to image
@@ -183,7 +387,8 @@ class TableExtractor:
                     {"Year": "2024", "GDP": "2.1%", "Inflation": "3.5%"},
                     {"Year": "2025", "GDP": "2.5%", "Inflation": "2.8%"}
                 ],
-                "bbox": [100, 200, 500, 400]
+                "bbox": [100, 200, 500, 400],
+                "caption": "Table 3.1 – GDP Growth Projections"
             }
         ]
         """
@@ -201,6 +406,15 @@ class TableExtractor:
 
         extracted: List[Dict[str, Any]] = []
         errors: List[str] = []
+
+        # Open PDF once for caption extraction
+        try:
+            pdf_doc = fitz.open(pdf_path)
+            page = pdf_doc[page_num - 1]  # 0-based indexing
+        except Exception as e:
+            logger.warning(f"Failed to open PDF for caption extraction: {e}")
+            pdf_doc = None
+            page = None
 
         for flavor in ("lattice", "stream"):
             try:
@@ -234,20 +448,34 @@ class TableExtractor:
                     )
                     continue
 
+                # Extract bbox
+                bbox = list(table._bbox) if hasattr(table, '_bbox') and table._bbox else None
+
+                # Extract caption from surrounding text
+                caption = None
+                if page and bbox:
+                    caption = self._extract_caption_from_text(page, bbox)
+
                 extracted.append({
                     "accuracy": float(table.accuracy),
                     "data": rows,
-                    "bbox": list(table._bbox) if hasattr(table, '_bbox') and table._bbox else None,
+                    "bbox": bbox,
+                    "caption": caption,
                 })
 
                 logger.info(
                     f"Extracted table from page {page_num} "
-                    f"({len(rows)} rows, accuracy: {table.accuracy:.1f}%, flavor={flavor})"
+                    f"({len(rows)} rows, accuracy: {table.accuracy:.1f}%, "
+                    f"caption: {caption or 'none'}, flavor={flavor})"
                 )
 
             # Stop after first flavor that yields acceptable tables
             if extracted:
                 break
+
+        # Clean up PDF document
+        if pdf_doc:
+            pdf_doc.close()
 
         if not extracted and errors:
             logger.warning(

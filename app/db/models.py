@@ -31,6 +31,7 @@ def default_uuid() -> UUID:
 
 class DocumentStatus(str, PyEnum):
     NEW = "NEW"
+    PROCESSING = "PROCESSING"
     TEXT_EXTRACTED = "TEXT_EXTRACTED"
     CHUNKS_BUILT = "CHUNKS_BUILT"
     EMBEDDED = "EMBEDDED"

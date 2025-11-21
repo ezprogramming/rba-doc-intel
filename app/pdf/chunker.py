@@ -194,6 +194,7 @@ def chunk_pages(
     start_idx = 0
 
     while start_idx < len(full_text):
+
         # Calculate target end position (rough estimate: 1 token ≈ 4.5 chars)
         target_chars = int(max_tokens * 4.5)
         rough_end = min(start_idx + target_chars, len(full_text))
@@ -201,6 +202,12 @@ def chunk_pages(
         # Find smart boundary using paragraph-aware helper
         # This replaces the inline paragraph/sentence search with a reusable function
         end_idx = _find_paragraph_boundary(full_text, rough_end, window=200)
+
+        # CRITICAL: Ensure we always make forward progress
+        # If boundary finder returns same position (no newlines found), force advance
+        if end_idx <= start_idx:
+            # No valid boundary found, take at least some text to avoid infinite loop
+            end_idx = min(start_idx + 100, len(full_text))
 
         # Extract candidate chunk
         chunk_text = full_text[start_idx:end_idx].strip()
@@ -217,6 +224,9 @@ def chunk_pages(
                 start_idx + strict_target,
                 window=100  # Smaller window for stricter control
             )
+            # CRITICAL: Ensure we always make forward progress
+            if end_idx <= start_idx:
+                end_idx = min(start_idx + 100, len(full_text))
             chunk_text = full_text[start_idx:end_idx].strip()
 
         # Table-aware: check if chunk contains table markers
@@ -257,14 +267,16 @@ def chunk_pages(
         # This preserves complete thoughts vs word-based splitting
         overlap_text = _get_sentence_overlap(chunk_text, num_sentences=2)
 
-        # Find where overlap starts in the full text
+        # Calculate overlap position (overlap is at END of current chunk)
         if overlap_text and overlap_text != chunk_text:
-            # Search for overlap text starting from current chunk
-            overlap_start = full_text.find(overlap_text, start_idx)
-            if overlap_start > start_idx and overlap_start < end_idx:
-                start_idx = overlap_start
+            overlap_length = len(overlap_text)
+            # Overlap starts this many chars before end_idx
+            potential_start = end_idx - overlap_length
+            # Only use overlap if it's within current chunk
+            if potential_start > start_idx:
+                start_idx = potential_start
             else:
-                # Fallback: move to end without overlap
+                # Overlap longer than chunk, skip overlap and move forward
                 start_idx = end_idx
         else:
             # No overlap possible (chunk too short)

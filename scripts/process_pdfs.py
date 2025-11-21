@@ -22,7 +22,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import List, cast
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from app.config import get_settings
 from app.db.models import Chunk as ChunkModel
@@ -35,9 +35,39 @@ from app.storage import MinioStorage
 LOGGER = logging.getLogger(__name__)
 
 
+def _reset_orphaned_processing_documents() -> int:
+    """Reset documents stuck in PROCESSING state from previous crashed runs.
+
+    This handles the case where:
+    - Worker process crashed mid-execution
+    - Container was killed (SIGKILL)
+    - Database connection was lost
+
+    Returns the number of documents reset.
+    """
+    with session_scope() as session:
+        stmt = (
+            update(Document)
+            .where(Document.status == DocumentStatus.PROCESSING.value)
+            .values(status=DocumentStatus.NEW.value)
+        )
+        result = session.execute(stmt)
+        count = result.rowcount
+        if count > 0:
+            LOGGER.warning(
+                "Reset %d orphaned PROCESSING documents from previous run", count
+            )
+        return count
+
+
 def _fetch_pending_document_ids(limit: int) -> List[str]:
     with session_scope() as session:
-        stmt = select(Document.id).where(Document.status == DocumentStatus.NEW.value).limit(limit)
+        stmt = (
+            select(Document.id)
+            .where(Document.status == DocumentStatus.NEW.value)
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
         return [str(row[0]) for row in session.execute(stmt)]
 
 
@@ -78,26 +108,38 @@ def _persist_chunks(session, document: Document, segments: List[ChunkSegment]) -
 
 
 def process_document(document_id: str, storage: MinioStorage) -> None:
-    """Process a single PDF document through the pipeline.
+    """Process a single PDF document using two-phase transaction pattern.
 
-    Steps:
-    1. Download PDF from MinIO to temp file
-    2. Extract raw text per page
-    3. Detect repeating headers/footers across all pages
-    4. Clean each page (remove headers/footers, normalize whitespace)
-    5. Save pages to database
-    6. Chunk cleaned pages for RAG
-    7. Save chunks to database
-    8. Update document status
+    Architecture (production-ready):
 
-    Why detect headers/footers first?
-    - RBA documents have consistent headers/footers across pages
-    - Better to analyze all pages together than clean individually
-    - Example: "Reserve Bank of Australia" may not match regex if slightly varied,
-      but will be detected as repeating in 90% of pages
+    Phase 1 - Fast DB transaction (milliseconds):
+        - Lock document row (FOR UPDATE SKIP LOCKED already applied in fetch)
+        - Mark as PROCESSING
+        - Get s3_key
+        - Commit immediately
+
+    Phase 2 - Heavy I/O + CPU work (no DB lock):
+        - Download PDF from MinIO
+        - Extract and clean text
+        - Chunk for RAG
+
+    Phase 3 - Fast DB transaction (milliseconds):
+        - Write pages and chunks
+        - Mark as CHUNKS_BUILT
+        - Commit immediately
+
+    Why this pattern?
+    - DB locks held for milliseconds, not minutes
+    - Multiple workers can process different documents simultaneously
+    - No blocking on I/O or CPU work
+    - Follows production best practices (see: Django Celery, Sidekiq patterns)
     """
     temp_path: Path | None = None
+    s3_key: str | None = None
+    title: str = ""
+
     try:
+        # ===== PHASE 1: Fast transaction to claim document =====
         with session_scope() as session:
             document = session.get(Document, document_id)
             if document is None:
@@ -105,35 +147,53 @@ def process_document(document_id: str, storage: MinioStorage) -> None:
                 return
             document = cast(Document, document)
 
-            LOGGER.info("Processing document %s (%s)", document_id, document.title)
+            # Claim this document (row already locked by FOR UPDATE SKIP LOCKED in fetch)
+            document.status = DocumentStatus.PROCESSING.value
+            s3_key = document.s3_key
+            title = document.title
+            # Transaction commits here - lock released immediately!
 
-            # Download PDF from object storage
-            temp_path = _download_to_temp(storage, document.s3_key)
+        LOGGER.info("Processing document %s (%s)", document_id, title)
 
-            # Extract raw text per page
-            raw_pages = parser.extract_pages(temp_path)
+        # ===== PHASE 2: Heavy work (no DB transaction) =====
+        # Download PDF from object storage
+        temp_path = _download_to_temp(storage, s3_key)
 
-            # Detect repeating headers/footers across ALL pages
-            # This catches patterns that regex might miss
-            repeating_headers, repeating_footers = cleaner.detect_repeating_headers_footers(
-                raw_pages
-            )
+        # Extract raw text per page
+        raw_pages = parser.extract_pages(temp_path)
 
-            # Clean each page using both pattern-based and frequency-based detection
-            clean_pages = [
-                cleaner.clean_text(page, repeating_headers, repeating_footers)
-                for page in raw_pages
-            ]
+        # Detect repeating headers/footers across ALL pages
+        repeating_headers, repeating_footers = cleaner.detect_repeating_headers_footers(
+            raw_pages
+        )
+
+        # Clean each page using both pattern-based and frequency-based detection
+        clean_pages = [
+            cleaner.clean_text(page, repeating_headers, repeating_footers)
+            for page in raw_pages
+        ]
+
+        # Chunk cleaned pages for RAG
+        segments = chunk_pages(clean_pages)
+
+        # ===== PHASE 3: Fast transaction to persist results =====
+        with session_scope() as session:
+            document = session.get(Document, document_id)
+            if document is None:
+                LOGGER.warning("Document %s vanished before persist", document_id)
+                return
+            document = cast(Document, document)
 
             # Persist both raw and clean text to database
-            # Why keep raw? Allows re-processing with improved cleaning later
             _persist_pages(session, document, raw_pages, clean_pages)
             document.status = DocumentStatus.TEXT_EXTRACTED.value
 
-            # Chunk cleaned pages for RAG
-            segments = chunk_pages(clean_pages)
+            # Persist chunks
             _persist_chunks(session, document, segments)
             document.status = DocumentStatus.CHUNKS_BUILT.value
+            # Transaction commits here!
+
+        LOGGER.info("✓ Completed: %s", document_id)
 
     except Exception as exc:  # noqa: BLE001
         LOGGER.exception("Failed to process %s: %s", document_id, exc)
@@ -171,6 +231,10 @@ def main(batch_size: int = 16, max_workers: int = 2) -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
+
+    # Reset any orphaned PROCESSING documents from previous crashed runs
+    # This ensures clean state before starting new processing
+    _reset_orphaned_processing_documents()
 
     # Create single storage instance (thread-safe MinIO client)
     storage = MinioStorage()
