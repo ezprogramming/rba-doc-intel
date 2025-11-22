@@ -230,9 +230,14 @@ def answer_query(
 RBA Document Excerpts:
 {context}
 
-Instructions: Answer the question using ONLY the information from the excerpts above. Include document names and page numbers. If the excerpts don't contain the answer, say so.
+Instructions:
+- Provide a COMPREHENSIVE answer using ONLY the information from the excerpts above
+- Include ALL relevant details: numbers, dates, trends, forecasts
+- Cite document names and page numbers for each point
+- If the excerpts don't contain specific information requested, acknowledge this limitation
+- Synthesize information from multiple excerpts if available
 
-Answer:"""
+Answer (provide 3-5 sentences with full details):"""
     messages = [{"role": "user", "content": user_content}]
 
     # Step 4: Generate answer using LLM
