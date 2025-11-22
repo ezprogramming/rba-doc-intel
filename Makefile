@@ -3,7 +3,7 @@ APP_SERVICE ?= app
 APP_RUN := $(COMPOSE) run --rm $(APP_SERVICE)
 UV_RUN := $(APP_RUN) uv run
 ARGS ?=
-MODEL ?= qwen2.5:7b
+MODEL ?= qwen2.5:1.5b
 CMD ?= bash
 SERVICE ?= app
 

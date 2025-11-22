@@ -28,6 +28,13 @@ class LLMClient:
             "model": self._model_name,
             "prompt": full_prompt,
             "stream": stream,
+            # Performance optimizations for CPU inference
+            "options": {
+                "num_predict": 512,  # Max tokens to generate (faster responses)
+                "num_ctx": 4096,  # Context window size (reduced from 32K default)
+                "temperature": 0.7,  # Balanced creativity/consistency
+                "num_thread": 4,  # CPU threads (adjust based on available cores)
+            },
         }
 
     def complete(self, system_prompt: str, messages: List[dict]) -> str:

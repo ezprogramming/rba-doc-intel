@@ -45,6 +45,10 @@ services:
     image: ollama/ollama:latest
     environment:
       OLLAMA_HOST: 0.0.0.0
+      # CPU optimization settings
+      OLLAMA_NUM_PARALLEL: 1  # Process one request at a time on CPU
+      OLLAMA_MAX_LOADED_MODELS: 1  # Keep only one model in memory
+      OLLAMA_KEEP_ALIVE: 5m  # Keep model loaded for 5 minutes
     ports:
       - "11434:11434"
     volumes:
