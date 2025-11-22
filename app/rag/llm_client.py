@@ -30,9 +30,9 @@ class LLMClient:
             "stream": stream,
             # Performance optimizations for CPU inference
             "options": {
-                "num_predict": 512,  # Max tokens to generate (faster responses)
+                "num_predict": 1024,  # Max tokens to generate (allow fuller responses)
                 "num_ctx": 4096,  # Context window size (reduced from 32K default)
-                "temperature": 0.7,  # Balanced creativity/consistency
+                "temperature": 0.2,  # Low temperature for factual, focused RAG responses
                 "num_thread": 4,  # CPU threads (adjust based on available cores)
             },
         }

@@ -49,23 +49,27 @@ class AnswerResponse:
 
 
 SYSTEM_PROMPT = """
-You are a financial analyst specializing in Australian macroeconomics and monetary policy.
+You are a financial analyst. Answer questions using ONLY the RBA document excerpts provided.
 
-CRITICAL RULES - YOU MUST FOLLOW THESE STRICTLY:
-1. Answer ONLY using the provided context from RBA documents
-2. If the context does NOT contain information to answer the question, say: "I cannot answer this question based on the available RBA documents. The provided excerpts do not contain specific information about [topic]."
-3. DO NOT use your general knowledge or training data to fill in gaps
-4. DO NOT make assumptions or inferences beyond what the documents explicitly state
+STRICT RULES:
+1. Use ONLY the provided context - do NOT add outside knowledge
+2. If context lacks information, say: "Based on the provided RBA documents, I cannot find specific information about [topic]."
+3. Always cite document name and page numbers
+4. Include numbers and dates from the context
+5. Stay focused on answering the specific question asked
 
-When answering from context:
-1. Cite specific document titles and page ranges
-2. Include quantitative data when available (forecasts, percentages, dates)
-3. Explain trends as described in the documents
-4. For forecasts, always specify the time period and any caveats mentioned
-5. Quote or paraphrase directly from the provided excerpts
-6. If the question asks about something specific (e.g., a city, year, metric) and the context only has general information, acknowledge this limitation
+EXAMPLE OF CORRECT ANSWER FORMAT:
 
-Stay strictly within the boundaries of the provided context.
+Question: "What is the inflation forecast for 2024?"
+Context: "[SMP Feb 2024] Inflation is expected to decline to 3.2% by December 2024 (page 12)"
+
+GOOD ANSWER:
+"According to the Statement on Monetary Policy - February 2024 (page 12), inflation is forecast to decline to 3.2% by December 2024."
+
+BAD ANSWER (uses outside knowledge):
+"Inflation is affected by global supply chains and consumer demand..."
+
+Remember: Answer the question using ONLY what's in the provided context.
 """
 
 
@@ -221,15 +225,14 @@ def answer_query(
 
     # Step 3: Format context and generate answer
     context = _format_context(chunks)
-    user_content = f"""Based ONLY on the following excerpts from RBA documents, answer this question.
-If the excerpts do not contain the information needed, explicitly state what is missing.
+    user_content = f"""Question: {query}
 
-Question: {query}
-
-Context from RBA Documents:
+RBA Document Excerpts:
 {context}
 
-Answer based strictly on the above context:"""
+Instructions: Answer the question using ONLY the information from the excerpts above. Include document names and page numbers. If the excerpts don't contain the answer, say so.
+
+Answer:"""
     messages = [{"role": "user", "content": user_content}]
 
     # Step 4: Generate answer using LLM
