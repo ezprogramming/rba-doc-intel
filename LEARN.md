@@ -78,7 +78,7 @@ The RBA Document Intelligence Platform is a **Retrieval-Augmented Generation (RA
 | Object Storage | MinIO | S3-compatible, self-hosted, free |
 | Embedding Model | nomic-embed-text-v1.5 | 768-dim, open source, good quality |
 | Embedding Framework | transformers (HuggingFace) | Production-grade, explicit padding control, 2.5x faster than sentence-transformers |
-| LLM | qwen2.5:7b (Ollama) | Multilingual, good reasoning, runs locally |
+| LLM | qwen2.5:1.5b (Ollama) | Multilingual, CPU-optimized, fast local inference |
 | UI Framework | Streamlit | Rapid development, built-in widgets |
 | PDF Library | PyMuPDF | Fast, reliable, good Unicode support |
 | Vector Index | HNSW (pgvector) | Fast approximate search, 10-100x speedup |

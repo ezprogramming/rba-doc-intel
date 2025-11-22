@@ -71,7 +71,7 @@ Indexes: HNSW (vector), GIN (full-text), composite (type/date, status, session)
 ### Start Services
 ```bash
 make up-detached
-make llm-pull MODEL=qwen2.5:7b
+make llm-pull MODEL=qwen2.5:1.5b
 ```
 
 ### Ingest PDFs
@@ -213,7 +213,7 @@ make finetune
 | `EMBEDDING_API_BASE_URL` | http://embedding:8000 | Embedding service |
 | `EMBEDDING_BATCH_SIZE` | 16 | Chunks per batch |
 | `EMBEDDING_API_TIMEOUT` | 120s | HTTP timeout |
-| `LLM_MODEL_NAME` | qwen2.5:7b | Ollama model |
+| `LLM_MODEL_NAME` | qwen2.5:1.5b | Ollama model (CPU-optimized) |
 | `LLM_API_BASE_URL` | http://llm:11434 | Ollama host |
 | `USE_RERANKING` | 0 (disabled) | Enable cross-encoder |
 | `RERANKER_MODEL_NAME` | (default) | Cross-encoder model ID |
@@ -285,7 +285,7 @@ make test ARGS="tests/pdf/test_chunker.py -v"
 | Embedding API not ready | Wait ~30s for model download; check logs: `make logs SERVICE=embedding` |
 | OOM during embedding | Reduce `EMBEDDING_BATCH_SIZE` in `.env` (e.g., 8) |
 | Slow retrieval | Check indexes: `ANALYZE chunks; SELECT pg_size_pretty(pg_relation_size('chunks'));` |
-| LLM model not found | Run `make llm-pull MODEL=qwen2.5:7b` |
+| LLM model not found | Run `make llm-pull MODEL=qwen2.5:1.5b` |
 | PDF parsing fails | Check doc status: `DEBUG_DUMP`, look for status=FAILED |
 | Reranking slow | `USE_RERANKING=0` to disable, or increase `RERANKER_BATCH_SIZE` |
 

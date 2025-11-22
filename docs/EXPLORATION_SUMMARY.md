@@ -830,7 +830,7 @@ The **RBA Document Intelligence Platform** is a production-style Python applicat
 - Database: PostgreSQL + pgvector
 - Storage: MinIO (S3-compatible)
 - Embeddings: Hugging Face `nomic-embed-text-v1.5` (768-dim)
-- LLM: Ollama (local) with configurable models (default: `qwen2.5:7b`)
+- LLM: Ollama (local) with configurable models (default: `qwen2.5:1.5b`)
 - UI: Streamlit
 - Instrumentation: Lightweight hook bus for events
 
@@ -937,7 +937,7 @@ class Settings:
 - `DATABASE_URL` - PostgreSQL connection string
 - `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` - S3 storage
 - `EMBEDDING_API_BASE_URL` - Embedding service URL
-- `LLM_MODEL_NAME` - Ollama model (default: `qwen2.5:7b`)
+- `LLM_MODEL_NAME` - Ollama model (default: `qwen2.5:1.5b`)
 - `CRAWLER_YEAR_FILTER` - Optional year filter (e.g., `2024`)
 
 ### 2. **Database Layer (`app/db/`)**
@@ -1071,7 +1071,7 @@ def retrieve_similar_chunks(
 #### LLM Client (`llm_client.py`)
 HTTP wrapper for Ollama:
 - Accepts prompt + context
-- Configurable model (default: `qwen2.5:7b`)
+- Configurable model (default: `qwen2.5:1.5b`)
 - Streaming support for token-by-token UI
 
 #### Pipeline (`pipeline.py`, ~260 lines)
@@ -1454,7 +1454,7 @@ TABLE_BATCH_SIZE=16
 TABLE_MAX_WORKERS=4
 
 # LLM
-LLM_MODEL_NAME=qwen2.5:7b
+LLM_MODEL_NAME=qwen2.5:1.5b
 LLM_API_BASE_URL=http://llm:11434
 
 # Reranking (optional)
@@ -1613,7 +1613,7 @@ make bootstrap
 ### 2. **Start Services**
 ```bash
 make up-detached
-make llm-pull MODEL=qwen2.5:7b
+make llm-pull MODEL=qwen2.5:1.5b
 ```
 
 ### 3. **Ingest Corpus**
@@ -2238,7 +2238,7 @@ make finetune
 | `PDF_MAX_WORKERS` | 2 | Processor threads |
 | `TABLE_BATCH_SIZE` | 16 | Docs per fetch in table extractor |
 | `TABLE_MAX_WORKERS` | 4 | Table extractor processes |
-| `LLM_MODEL_NAME` | qwen2.5:7b | Ollama model |
+| `LLM_MODEL_NAME` | qwen2.5:1.5b | Ollama model (CPU-optimized) |
 | `LLM_API_BASE_URL` | http://llm:11434 | Ollama host |
 | `USE_RERANKING` | 0 (disabled) | Enable cross-encoder |
 | `RERANKER_MODEL_NAME` | (default) | Cross-encoder model ID |
@@ -2310,7 +2310,7 @@ make test ARGS="tests/pdf/test_chunker.py -v"
 | Embedding API not ready | Wait ~30s for model download; check logs: `make logs SERVICE=embedding` |
 | OOM during embedding | Reduce `EMBEDDING_BATCH_SIZE` in `.env` (e.g., 8) |
 | Slow retrieval | Check indexes: `ANALYZE chunks; SELECT pg_size_pretty(pg_relation_size('chunks'));` |
-| LLM model not found | Run `make llm-pull MODEL=qwen2.5:7b` |
+| LLM model not found | Run `make llm-pull MODEL=qwen2.5:1.5b` |
 | PDF parsing fails | Check doc status: `DEBUG_DUMP`, look for status=FAILED |
 | Reranking slow | `USE_RERANKING=0` to disable, or increase `RERANKER_BATCH_SIZE` |
 

@@ -210,7 +210,7 @@ Use **PostgreSQL with pgvector extension** instead of specialized vector databas
 ## 7. LLM: Local (Ollama) vs Cloud (OpenAI)
 
 ### Decision
-Use **local LLM via Ollama** (qwen2.5:7b) for RAG answers.
+Use **local LLM via Ollama** (qwen2.5:1.5b) for RAG answers.
 
 ### Why Local?
 - ✅ **Privacy**: No data sent to external APIs
@@ -220,7 +220,7 @@ Use **local LLM via Ollama** (qwen2.5:7b) for RAG answers.
 
 ### Tradeoffs
 - ❌ **Quality**: Cloud models (GPT-4) are better
-- ❌ **Hardware**: Needs GPU for reasonable speed
+- ❌ **Hardware**: CPU inference slower than GPU (optimized for 1.5B model)
 - ❌ **Maintenance**: Model updates require manual download
 
 ### When to Use Cloud?

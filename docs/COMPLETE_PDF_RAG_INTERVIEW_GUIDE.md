@@ -49,7 +49,7 @@ Use this trio as the skeleton for any behavioral/practical question: "How do you
 
 ```env
 # .env.example
-LLM_MODEL_NAME=qwen2.5:7b
+LLM_MODEL_NAME=qwen2.5:1.5b
 LLM_API_BASE_URL=http://llm:11434
 LLM_API_KEY=
 ```
@@ -1532,7 +1532,7 @@ Use the following narrative to connect platform decisions to the three focus are
 
 | Phase | What We Do | Why It Matters |
 |-------|------------|----------------|
-| **Base model selection** | Run `ollama pull qwen2.5:7b` (or 1.5B for CPU) so local inference stays air-gapped. Streamlit streams directly from the Ollama container. | Keeps latency manageable (<1s/token) while supporting on-prem compliance. |
+| **Base model selection** | Run `ollama pull qwen2.5:1.5b` (or 7B for systems with more resources) so local inference stays air-gapped. Streamlit streams directly from the Ollama container. | Keeps latency manageable (<1s/token on CPU) while supporting on-prem compliance. |
 | **Supervised fine-tuning (SFT)** | Start from curated analyst Q/A pairs (economics primers, SMP summaries). Apply LoRA adapters via `make finetune ARGS="--dataset data/sft.jsonl"`. | Teaches macro reasoning style + citation cadence before touching feedback data. |
 | **PEFT/LoRA/QLoRA** | Hugging Face `peft` adapters stored under `models/rba-lora-*`; QLoRA lets us fine-tune 7B models on M2/M3 Macs (4-bit base weights, 16-bit adapters). | Impossible to retrain full 7B locally; adapters keep VRAM <8 GB. |
 | **Distillation** | When we run heavier models (Claude/GPT-4) offline for chart descriptions, we distill their answers back into the local LoRA set. | Captures premium-model reasoning without recurring cost. |
