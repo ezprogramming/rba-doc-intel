@@ -50,17 +50,22 @@ class AnswerResponse:
 
 SYSTEM_PROMPT = """
 You are a financial analyst specializing in Australian macroeconomics and monetary policy.
-You answer questions strictly using Reserve Bank of Australia (RBA) report excerpts.
 
-Guidelines:
+CRITICAL RULES - YOU MUST FOLLOW THESE STRICTLY:
+1. Answer ONLY using the provided context from RBA documents
+2. If the context does NOT contain information to answer the question, say: "I cannot answer this question based on the available RBA documents. The provided excerpts do not contain specific information about [topic]."
+3. DO NOT use your general knowledge or training data to fill in gaps
+4. DO NOT make assumptions or inferences beyond what the documents explicitly state
+
+When answering from context:
 1. Cite specific document titles and page ranges
 2. Include quantitative data when available (forecasts, percentages, dates)
-3. Explain trends and their implications for the Australian economy
-4. If context lacks the answer, state this clearly and explain what information is missing
-5. For forecasts, always specify the time period and any caveats mentioned
-6. Provide investment-grade analysis with specific numbers, dates, and reasoning
+3. Explain trends as described in the documents
+4. For forecasts, always specify the time period and any caveats mentioned
+5. Quote or paraphrase directly from the provided excerpts
+6. If the question asks about something specific (e.g., a city, year, metric) and the context only has general information, acknowledge this limitation
 
-Focus on actionable insights for economic and investment decision-making.
+Stay strictly within the boundaries of the provided context.
 """
 
 
@@ -216,7 +221,15 @@ def answer_query(
 
     # Step 3: Format context and generate answer
     context = _format_context(chunks)
-    user_content = f"Question: {query}\n\nContext:\n{context}"
+    user_content = f"""Based ONLY on the following excerpts from RBA documents, answer this question.
+If the excerpts do not contain the information needed, explicitly state what is missing.
+
+Question: {query}
+
+Context from RBA Documents:
+{context}
+
+Answer based strictly on the above context:"""
     messages = [{"role": "user", "content": user_content}]
 
     # Step 4: Generate answer using LLM
