@@ -44,7 +44,7 @@ class LLMClient:
             f"{self._base_url}/api/generate",
             json=payload,
             headers=headers,
-            timeout=240,
+            timeout=600,  # Increased to 10 minutes for CPU inference
         )
         if response.status_code == 404:
             raise RuntimeError(
@@ -71,7 +71,7 @@ class LLMClient:
             json=payload,
             headers=headers,
             stream=True,
-            timeout=240,
+            timeout=600,  # Increased to 10 minutes for CPU inference
         ) as response:
             if response.status_code == 404:
                 raise RuntimeError(
