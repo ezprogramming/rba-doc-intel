@@ -10,20 +10,23 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Iterable, Iterator, List, Sequence
+from typing import List, Sequence
 from urllib.parse import urljoin, urlparse
 
 import requests
-from bs4 import BeautifulSoup
-from requests import Response
-
 from app.db.models import Document, DocumentStatus
 from app.db.session import session_scope
 from app.storage import MinioStorage
+from bs4 import BeautifulSoup
+from requests import Response
 
 BASE_URL = "https://www.rba.gov.au"
 LOGGER = logging.getLogger(__name__)
-USER_AGENT = os.environ.get("CRAWLER_USER_AGENT", "rba-doc-intel/0.1 (+https://github.com/ezprogramming)")
+USER_AGENT = os.environ.get(
+    "CRAWLER_USER_AGENT", "rba-doc-intel/0.1 (+https://github.com/ezprogramming)"
+)
+
+
 def _parse_year_filters(raw_filters: str) -> set[str]:
     filters: set[str] = set()
     current_year = date.today().year
@@ -144,7 +147,9 @@ def _parse_issue_metadata(issue_url: str, issue_html: str) -> IssueMetadata:
     return IssueMetadata(url=issue_url, title=title, publication_date=publication_date)
 
 
-def _extract_pdf_candidates(issue_html: str, metadata: IssueMetadata, prefix: str) -> List[PdfCandidate]:
+def _extract_pdf_candidates(
+    issue_html: str, metadata: IssueMetadata, prefix: str
+) -> List[PdfCandidate]:
     soup = BeautifulSoup(issue_html, "html.parser")
     candidates: dict[str, PdfCandidate] = {}
     for anchor in soup.find_all("a", href=True):
@@ -193,9 +198,7 @@ def _object_key(doc_type: str, publication_date: date | None, pdf_url: str) -> s
 def _document_exists(content_hash: str) -> bool:
     with session_scope() as session:
         return bool(
-            session.query(Document.id)
-            .filter(Document.content_hash == content_hash)
-            .first()
+            session.query(Document.id).filter(Document.content_hash == content_hash).first()
         )
 
 
@@ -240,11 +243,7 @@ def ingest_source(source: PublicationSource, storage: MinioStorage) -> int:
         filtered_notice = True
     if YEAR_FILTERS and filtered_notice:
         before = len(issue_urls)
-        issue_urls = [
-            url
-            for url in issue_urls
-            if any(f"/{year}/" in url for year in YEAR_FILTERS)
-        ]
+        issue_urls = [url for url in issue_urls if any(f"/{year}/" in url for year in YEAR_FILTERS)]
         LOGGER.info(
             "Applying year filter %s: %d -> %d issue pages",
             sorted(YEAR_FILTERS),
@@ -279,7 +278,9 @@ def ingest_source(source: PublicationSource, storage: MinioStorage) -> int:
                 if _document_exists(content_hash):
                     LOGGER.debug("Duplicate detected for %s", candidate.pdf_url)
                     continue
-                object_key = _object_key(source.doc_type, candidate.issue.publication_date, candidate.pdf_url)
+                object_key = _object_key(
+                    source.doc_type, candidate.issue.publication_date, candidate.pdf_url
+                )
                 storage.upload_file(storage.raw_bucket, object_key, temp_path)
                 _register_document(
                     source=source,

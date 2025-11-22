@@ -31,7 +31,8 @@ logger = logging.getLogger(__name__)
 # KNOWN ISSUE: PyMuPDF warnings about invalid graphics states
 # ============================================================
 # Many RBA PDFs contain invalid graphics states (e.g., /'P0' instead of valid float values)
-# These trigger warnings like: "Cannot set gray stroke color because /'P0' is an invalid float value"
+# These trigger warnings like:
+# "Cannot set gray stroke color because /'P0' is an invalid float value"
 #
 # Root cause: The source PDF files have malformed graphics state dictionaries
 # Impact: Warnings clutter logs, but extraction still works correctly (warnings are recoverable)
@@ -45,6 +46,7 @@ logger = logging.getLogger(__name__)
 # Try to import camelot (optional dependency)
 try:
     import camelot
+
     CAMELOT_AVAILABLE = True
 except ImportError:
     CAMELOT_AVAILABLE = False
@@ -100,14 +102,21 @@ class TableExtractor:
             return False
 
         # Remove common data symbols
-        cleaned = value.replace('.', '').replace('-', '').replace('%', '').replace(',', '').replace('+', '').strip()
+        cleaned = (
+            value.replace(".", "")
+            .replace("-", "")
+            .replace("%", "")
+            .replace(",", "")
+            .replace("+", "")
+            .strip()
+        )
 
         # Check if it's a pure number
         if not cleaned.isdigit():
             return False
 
         # If it has a decimal point, it's likely data (0.7, 1.5)
-        if '.' in value:
+        if "." in value:
             return True
 
         # If it's a small integer (< 100), it's likely data
@@ -160,8 +169,7 @@ class TableExtractor:
             # Years like "2022", "2020" are treated as text (headers), not data
             # Only pure decimals like "0.7", "1.5", "-3" are treated as numbers
             text_cells = sum(
-                1 for val in row
-                if val.strip() and not self._is_numeric_data(val.strip())
+                1 for val in row if val.strip() and not self._is_numeric_data(val.strip())
             )
 
             # Count empty or whitespace cells
@@ -176,18 +184,23 @@ class TableExtractor:
             # 1. Standard: Has some non-empty cells (>30%) and most are text (>70%)
             # 2. RBA pattern: First cell empty, but >50% of remaining cells are text
             is_header_row = (
-                (non_empty >= len(row) * 0.3 and text_cells >= max(1, non_empty * 0.7)) or
-                (first_empty and rest_non_empty >= len(row[1:]) * 0.5 and text_cells >= max(1, rest_non_empty * 0.7))
+                non_empty >= len(row) * 0.3 and text_cells >= max(1, non_empty * 0.7)
+            ) or (
+                first_empty
+                and rest_non_empty >= len(row[1:]) * 0.5
+                and text_cells >= max(1, rest_non_empty * 0.7)
             )
 
             if is_header_row:
-                header_candidates.append({
-                    'index': row_idx,
-                    'row': row,
-                    'non_empty': non_empty,
-                    'empty_cells': empty_cells,
-                    'text_cells': text_cells
-                })
+                header_candidates.append(
+                    {
+                        "index": row_idx,
+                        "row": row,
+                        "non_empty": non_empty,
+                        "empty_cells": empty_cells,
+                        "text_cells": text_cells,
+                    }
+                )
 
         # No header rows detected
         if not header_candidates:
@@ -197,8 +210,8 @@ class TableExtractor:
         # For RBA tables: Row 2 usually has actual column names
         # Row 0/1 often have grouping labels or units
         best_header = header_candidates[-1]
-        header_row_idx = best_header['index']
-        headers = best_header['row'].values.tolist()
+        header_row_idx = best_header["index"]
+        headers = best_header["row"].values.tolist()
 
         # Clean and make headers unique
         cleaned_headers = []
@@ -226,9 +239,7 @@ class TableExtractor:
 
         # Apply headers and skip all header rows
         df.columns = cleaned_headers
-        return df[header_row_idx + 1:].reset_index(drop=True)
-
-        return df
+        return df[header_row_idx + 1 :].reset_index(drop=True)
 
     def _has_numeric_content(self, rows: List[Dict[str, Any]], threshold: float = 0.3) -> bool:
         """Check if table contains numerical data (not just text layout).
@@ -260,8 +271,8 @@ class TableExtractor:
                 str_val = str(value).strip()
 
                 # Check if cell contains a number (allow %, -, .)
-                cleaned = str_val.replace('.', '').replace('-', '')
-                cleaned = cleaned.replace('%', '').replace(',', '')
+                cleaned = str_val.replace(".", "").replace("-", "")
+                cleaned = cleaned.replace("%", "").replace(",", "")
                 if str_val and cleaned.isdigit():
                     numeric_cells += 1
 
@@ -271,9 +282,7 @@ class TableExtractor:
         numeric_ratio = numeric_cells / total_cells
         return numeric_ratio >= threshold
 
-    def _extract_caption_from_text(
-        self, page: fitz.Page, bbox: List[float] | None
-    ) -> str | None:
+    def _extract_caption_from_text(self, page: fitz.Page, bbox: List[float] | None) -> str | None:
         """Extract table caption from text above the table.
 
         Args:
@@ -328,7 +337,7 @@ class TableExtractor:
             # Check candidates for table caption patterns
             for _, text in candidates:
                 # Split by newlines - caption is usually on its own line
-                lines = [line.strip() for line in text.split('\n') if line.strip()]
+                lines = [line.strip() for line in text.split("\n") if line.strip()]
 
                 for line in lines:
                     line_lower = line.lower()
@@ -344,8 +353,13 @@ class TableExtractor:
                         # Filter out lines with too many numbers (likely table data)
                         # Count numeric tokens (integers or decimals)
                         numeric_tokens = sum(
-                            1 for word in words
-                            if word.replace('.', '').replace(',', '').replace('-', '').replace('%', '').isdigit()
+                            1
+                            for word in words
+                            if word.replace(".", "")
+                            .replace(",", "")
+                            .replace("-", "")
+                            .replace("%", "")
+                            .isdigit()
                         )
 
                         # Accept if less than 30% of words are numbers
@@ -401,7 +415,7 @@ class TableExtractor:
                 str(pdf_path),
                 pages=str(page_num),
                 flavor=flavor,
-                suppress_stdout=True  # Suppress Camelot's verbose output
+                suppress_stdout=True,  # Suppress Camelot's verbose output
             )
 
         extracted: List[Dict[str, Any]] = []
@@ -438,30 +452,31 @@ class TableExtractor:
 
                 # Apply header detection to get meaningful column names
                 df_with_headers = self._detect_headers(table.df)
-                rows = df_with_headers.to_dict('records')
+                rows = df_with_headers.to_dict("records")
 
                 # Filter out text-only tables (false positives)
                 if not self._has_numeric_content(rows):
                     logger.debug(
-                        f"Skipping text-only table on page {page_num} "
-                        f"(no numeric content detected)"
+                        f"Skipping text-only table on page {page_num} (no numeric content detected)"
                     )
                     continue
 
                 # Extract bbox
-                bbox = list(table._bbox) if hasattr(table, '_bbox') and table._bbox else None
+                bbox = list(table._bbox) if hasattr(table, "_bbox") and table._bbox else None
 
                 # Extract caption from surrounding text
                 caption = None
                 if page and bbox:
                     caption = self._extract_caption_from_text(page, bbox)
 
-                extracted.append({
-                    "accuracy": float(table.accuracy),
-                    "data": rows,
-                    "bbox": bbox,
-                    "caption": caption,
-                })
+                extracted.append(
+                    {
+                        "accuracy": float(table.accuracy),
+                        "data": rows,
+                        "bbox": bbox,
+                        "caption": caption,
+                    }
+                )
 
                 logger.info(
                     f"Extracted table from page {page_num} "
@@ -478,9 +493,7 @@ class TableExtractor:
             pdf_doc.close()
 
         if not extracted and errors:
-            logger.warning(
-                f"Table extraction failed for page {page_num}: {'; '.join(errors)}"
-            )
+            logger.warning(f"Table extraction failed for page {page_num}: {'; '.join(errors)}")
 
         return extracted
 
@@ -522,10 +535,7 @@ class TableExtractor:
 
                 if width > 200 and height > 150:
                     charts += 1
-                    logger.debug(
-                        f"Detected chart on page {page.number + 1}: "
-                        f"{width}x{height}px"
-                    )
+                    logger.debug(f"Detected chart on page {page.number + 1}: {width}x{height}px")
 
             return charts
 

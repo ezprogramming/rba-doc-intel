@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum as PyEnum
 from uuid import UUID, uuid4
 
@@ -40,9 +40,7 @@ class DocumentStatus(str, PyEnum):
 
 class Document(Base):
     __tablename__ = "documents"
-    __table_args__ = (
-        UniqueConstraint("content_hash", name="uq_documents_content_hash"),
-    )
+    __table_args__ = (UniqueConstraint("content_hash", name="uq_documents_content_hash"),)
 
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=default_uuid)
     source_system = Column(String, nullable=False)
@@ -54,11 +52,13 @@ class Document(Base):
     content_hash = Column(String(128), nullable=True)
     content_length = Column(Integer, nullable=True)
     status = Column(String, default=DocumentStatus.NEW.value, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
     updated_at = Column(
         DateTime(timezone=True),
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
 
@@ -74,7 +74,9 @@ class Page(Base):
     page_number = Column(Integer, nullable=False)
     raw_text = Column(Text, nullable=True)
     clean_text = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
 
     document = relationship("Document", back_populates="pages")
 
@@ -93,11 +95,13 @@ class Chunk(Base):
     embedding = Column(Vector(768), nullable=True)
     section_hint = Column(String, nullable=True)
     text_tsv = Column(TSVECTOR, nullable=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
     updated_at = Column(
         DateTime(timezone=True),
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
         nullable=False,
     )
 
@@ -110,7 +114,9 @@ class ChatSession(Base):
     __tablename__ = "chat_sessions"
 
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=default_uuid)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
     metadata_json = Column(JSON, nullable=True)
 
 
@@ -121,7 +127,9 @@ class ChatMessage(Base):
     session_id = Column(PG_UUID(as_uuid=True), ForeignKey("chat_sessions.id"), nullable=False)
     role = Column(String, nullable=False)
     content = Column(Text, nullable=False)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
     metadata_json = Column(JSON, nullable=True)
 
 
@@ -146,15 +154,14 @@ class Table(Base):
         {"Year": "2025", "GDP": "2.5%", "Inflation": "2.8%"}
     ]
     """
+
     __tablename__ = "tables"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
 
     # Link to source document and page
     document_id = Column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("documents.id", ondelete="CASCADE"),
-        nullable=False
+        PG_UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
     )
     page_number = Column(Integer, nullable=False)
 
@@ -173,7 +180,9 @@ class Table(Base):
     # Optional caption/title extracted from text near table
     caption = Column(Text, nullable=True)
 
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
     chunks = relationship("Chunk", back_populates="table")
 
 
@@ -194,15 +203,14 @@ class Chart(Base):
         "image_index": 0  # Index among images on this page
     }
     """
+
     __tablename__ = "charts"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
 
     # Link to source document and page
     document_id = Column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("documents.id", ondelete="CASCADE"),
-        nullable=False
+        PG_UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
     )
     page_number = Column(Integer, nullable=False)
 
@@ -219,7 +227,9 @@ class Chart(Base):
     # Future use: vision LLM can fetch and analyze
     s3_key = Column(Text, nullable=True)
 
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
     chunks = relationship("Chunk", back_populates="chart")
 
 
@@ -243,6 +253,7 @@ class EvalExample(Base):
     expected_keywords = ["2-3", "percent", "medium term"]
     difficulty = "easy"
     """
+
     __tablename__ = "eval_examples"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -264,7 +275,9 @@ class EvalExample(Base):
     # Flexible extension for future fields
     metadata_json = Column(JSON, nullable=True)
 
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
 
 
 class EvalRun(Base):
@@ -284,12 +297,15 @@ class EvalRun(Base):
         "reranking_enabled": True
     }
     """
+
     __tablename__ = "eval_runs"
 
     id = Column(PG_UUID(as_uuid=True), primary_key=True, default=default_uuid)
 
     # When was this run executed?
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
 
     # What configuration was tested?
     # Stores model name, prompt version, retrieval params, etc.
@@ -311,15 +327,14 @@ class EvalResult(Base):
     - Error analysis: "What types of questions fail most?"
     - Fine-tuning data: Use failed examples for improvement
     """
+
     __tablename__ = "eval_results"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
 
     # Which run does this result belong to?
     eval_run_id = Column(
-        PG_UUID(as_uuid=True),
-        ForeignKey("eval_runs.id", ondelete="CASCADE"),
-        nullable=False
+        PG_UUID(as_uuid=True), ForeignKey("eval_runs.id", ondelete="CASCADE"), nullable=False
     )
 
     # Which example was tested?
@@ -344,7 +359,9 @@ class EvalResult(Base):
     # Error message if generation failed
     error = Column(Text, nullable=True)
 
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
 
 
 class Feedback(Base):
@@ -363,6 +380,7 @@ class Feedback(Base):
     4. Periodically: analyze feedback, create fine-tuning dataset
     5. Fine-tune model on positive examples (SFT) or preference pairs (DPO)
     """
+
     __tablename__ = "feedback"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
@@ -384,4 +402,6 @@ class Feedback(Base):
     # Example: ["incorrect", "incomplete", "hallucination"]
     tags = Column(JSON, nullable=True)
 
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )

@@ -31,7 +31,7 @@ Streamlit will be reachable on `http://localhost:${STREAMLIT_SERVER_PORT:-8501}`
    ```bash
    make up-models
    # Pull the lightweight multilingual LLM once
-   make llm-pull MODEL=qwen2.5:1.5b
+   make llm-pull MODEL=qwen2.5:7b
    ```
 
 ## Running Pipelines
@@ -107,7 +107,7 @@ Set `CRAWLER_YEAR_FILTER` in `.env` (for example, `CRAWLER_YEAR_FILTER=2024` or 
 
 - **Chunking:** recursive, paragraph-aware splitter capped at ~768 tokens with 15 % overlap; section headers are stored as `section_hint` for richer evidence.
 - **Retrieval:** pgvector cosine search fused with Postgres `ts_rank_cd` keyword matches for hybrid semantic + lexical recall.
-- **LLM UX:** the Streamlit chat streams responses token-by-token from Ollama (default `qwen2.5:1.5b`), so answers start appearing while the long-form completion is still running.
+- **LLM UX:** the Streamlit chat streams responses token-by-token from Ollama (default `qwen2.5:7b`), so answers start appearing while the long-form completion is still running.
 - **Feedback loop:** analysts can rate each assistant reply (thumbs up/down); ratings land in the `feedback` table and have dedicated unit tests (`tests/ui/test_feedback.py`). Feedback events also emit via the hook bus for downstream analytics.
 - **Auto-restarting embedding service:** the embedding container now runs with `restart: unless-stopped` and inherits `EMBEDDING_BATCH_SIZE` from `.env` (4 for CPU-only systems, increase for GPU); set `EMBEDDING_DEVICE=cuda|mps|cpu` to force a specific accelerator. See `docs/PARALLEL_PROCESSING.md` for production tuning.
 

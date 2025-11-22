@@ -9,7 +9,6 @@ from sqlalchemy.orm import sessionmaker
 
 from app.config import get_settings
 
-
 _engine = None
 _SessionLocal = None
 

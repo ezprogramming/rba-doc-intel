@@ -94,10 +94,7 @@ class EvaluationMetrics:
     retrieved_chunks: List[Dict[str, Any]] = field(default_factory=list)
 
 
-def compute_keyword_match(
-    expected_keywords: List[str],
-    answer: str
-) -> float:
+def compute_keyword_match(expected_keywords: List[str], answer: str) -> float:
     """Compute fraction of expected keywords found in answer.
 
     Args:
@@ -131,17 +128,12 @@ def compute_keyword_match(
     answer_lower = answer.lower()
 
     # Count how many expected keywords appear in answer
-    matches = sum(
-        1 for keyword in expected_keywords
-        if keyword.lower() in answer_lower
-    )
+    matches = sum(1 for keyword in expected_keywords if keyword.lower() in answer_lower)
 
     # Return fraction of keywords found
     match_rate = matches / len(expected_keywords)
 
-    logger.debug(
-        f"Keyword match: {matches}/{len(expected_keywords)} = {match_rate:.2f}"
-    )
+    logger.debug(f"Keyword match: {matches}/{len(expected_keywords)} = {match_rate:.2f}")
 
     return match_rate
 
@@ -187,7 +179,7 @@ def evaluate_single_example(
         response = answer_query(
             query=example.query,
             top_k=config.get("retrieval_top_k", 5),
-            use_reranking=config.get("reranking_enabled", False)
+            use_reranking=config.get("reranking_enabled", False),
         )
 
         # Measure latency
@@ -207,8 +199,7 @@ def evaluate_single_example(
         # Compute keyword match if expected keywords provided
         if example.expected_keywords:
             metrics.keyword_match = compute_keyword_match(
-                expected_keywords=example.expected_keywords,
-                answer=answer
+                expected_keywords=example.expected_keywords, answer=answer
             )
 
         # Determine pass/fail
@@ -289,12 +280,7 @@ def run_evaluation(
     """
     # Create evaluation run record
     run_id = uuid4()
-    eval_run = EvalRun(
-        id=run_id,
-        created_at=datetime.utcnow(),
-        config=config,
-        status="running"
-    )
+    eval_run = EvalRun(id=run_id, created_at=datetime.utcnow(), config=config, status="running")
     session.add(eval_run)
     session.flush()  # Get run ID before processing examples
 
@@ -323,7 +309,7 @@ def run_evaluation(
             "passed": 0,
             "failed": 0,
             "pass_rate": 0.0,
-            "avg_latency_ms": 0
+            "avg_latency_ms": 0,
         }
         return run_id
 
@@ -339,10 +325,7 @@ def run_evaluation(
 
         # Run evaluation
         metrics = evaluate_single_example(
-            session=session,
-            example=example,
-            config=config,
-            min_keyword_match=min_keyword_match
+            session=session, example=example, config=config, min_keyword_match=min_keyword_match
         )
 
         # Store result
@@ -355,10 +338,10 @@ def run_evaluation(
             scores={
                 "keyword_match": metrics.keyword_match,
                 "answer_length": metrics.answer_length,
-                "retrieval_chunks": metrics.retrieval_chunks
+                "retrieval_chunks": metrics.retrieval_chunks,
             },
             passed=1 if metrics.passed else 0,
-            error=metrics.error
+            error=metrics.error,
         )
         session.add(result)
 
@@ -368,14 +351,16 @@ def run_evaluation(
         if metrics.error is None:  # Only count latency for successful runs
             total_latency_ms += metrics.latency_ms
 
-        results_data.append({
-            "example_id": example.id,
-            "query": example.query,
-            "passed": metrics.passed,
-            "keyword_match": metrics.keyword_match,
-            "latency_ms": metrics.latency_ms,
-            "error": metrics.error
-        })
+        results_data.append(
+            {
+                "example_id": example.id,
+                "query": example.query,
+                "passed": metrics.passed,
+                "keyword_match": metrics.keyword_match,
+                "latency_ms": metrics.latency_ms,
+                "error": metrics.error,
+            }
+        )
 
     # Compute summary metrics
     total_examples = len(examples)
@@ -389,7 +374,7 @@ def run_evaluation(
         "failed": total_examples - total_passed,
         "pass_rate": round(pass_rate, 4),
         "avg_latency_ms": round(avg_latency_ms, 2),
-        "min_keyword_match_threshold": min_keyword_match
+        "min_keyword_match_threshold": min_keyword_match,
     }
 
     # Update eval run with summary
@@ -411,11 +396,7 @@ def run_evaluation(
     return run_id
 
 
-def compare_eval_runs(
-    session: Session,
-    run_id_a: UUID,
-    run_id_b: UUID
-) -> Dict[str, Any]:
+def compare_eval_runs(session: Session, run_id_a: UUID, run_id_b: UUID) -> Dict[str, Any]:
     """Compare two evaluation runs to detect improvements or regressions.
 
     Args:
@@ -465,25 +446,20 @@ def compare_eval_runs(
         recommendation = "Reject"
 
     comparison = {
-        "run_a": {
-            "id": str(run_id_a),
-            "config": run_a.config,
-            "metrics": metrics_a
-        },
-        "run_b": {
-            "id": str(run_id_b),
-            "config": run_b.config,
-            "metrics": metrics_b
-        },
-        "deltas": {
-            "pass_rate": round(pass_rate_delta, 4),
-            "latency_ms": round(latency_delta, 2)
-        },
-        "recommendation": recommendation
+        "run_a": {"id": str(run_id_a), "config": run_a.config, "metrics": metrics_a},
+        "run_b": {"id": str(run_id_b), "config": run_b.config, "metrics": metrics_b},
+        "deltas": {"pass_rate": round(pass_rate_delta, 4), "latency_ms": round(latency_delta, 2)},
+        "recommendation": recommendation,
     }
 
     logger.info(f"Comparison: {recommendation}")
-    logger.info(f"Pass rate: {metrics_a.get('pass_rate', 0.0):.2%} → {metrics_b.get('pass_rate', 0.0):.2%} ({pass_rate_delta:+.2%})")
-    logger.info(f"Latency: {metrics_a.get('avg_latency_ms', 0):.0f}ms → {metrics_b.get('avg_latency_ms', 0):.0f}ms ({latency_delta:+.0f}ms)")
+    logger.info(
+        f"Pass rate: {metrics_a.get('pass_rate', 0.0):.2%} → "
+        f"{metrics_b.get('pass_rate', 0.0):.2%} ({pass_rate_delta:+.2%})"
+    )
+    logger.info(
+        f"Latency: {metrics_a.get('avg_latency_ms', 0):.0f}ms → "
+        f"{metrics_b.get('avg_latency_ms', 0):.0f}ms ({latency_delta:+.0f}ms)"
+    )
 
     return comparison

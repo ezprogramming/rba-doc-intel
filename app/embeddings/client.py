@@ -8,11 +8,11 @@ from typing import List
 
 import requests
 from tenacity import (
+    before_sleep_log,
     retry,
+    retry_if_exception_type,
     stop_after_attempt,
     wait_exponential,
-    retry_if_exception_type,
-    before_sleep_log
 )
 
 from app.config import get_settings
@@ -42,15 +42,17 @@ class EmbeddingClient:
         self._timeout = settings.embedding_api_timeout
 
     @retry(
-        retry=retry_if_exception_type((
-            requests.exceptions.ConnectionError,
-            requests.exceptions.Timeout,
-            requests.exceptions.HTTPError
-        )),
+        retry=retry_if_exception_type(
+            (
+                requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout,
+                requests.exceptions.HTTPError,
+            )
+        ),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=4, max=10),
         before_sleep=before_sleep_log(logger, logging.WARNING),
-        reraise=True
+        reraise=True,
     )
     def embed(self, texts: List[str]) -> EmbeddingResponse:
         """Generate embeddings for input texts with automatic retry.

@@ -67,7 +67,9 @@ def _format_row_sentence(row: dict, headers: List[str]) -> str:
     return "; ".join(parts)
 
 
-def _table_to_text(table: dict, max_rows: int = 50, format_style: str = "hybrid") -> tuple[str, List[str]]:
+def _table_to_text(
+    table: dict, max_rows: int = 50, format_style: str = "hybrid"
+) -> tuple[str, List[str]]:
     """Convert table to precise, structured format with multiple rendering options.
 
     Format styles:
@@ -239,8 +241,7 @@ def _persist_tables_and_chunks(document_id: str, tables: List[dict]) -> None:
         # Delete old table chunks first (before deleting tables)
         # This prevents orphaned chunks with table_id = NULL
         session.query(ChunkModel).filter(
-            ChunkModel.document_id == doc.id,
-            ChunkModel.table_id.isnot(None)
+            ChunkModel.document_id == doc.id, ChunkModel.table_id.isnot(None)
         ).delete(synchronize_session=False)
 
         # Now delete old tables
@@ -313,9 +314,7 @@ def process_document(document_id: str, s3_key: str) -> Tuple[str, List[dict]]:
 
 
 def _fetch_target_documents(
-    limit: int,
-    document_ids: Sequence[str] | None,
-    force: bool
+    limit: int, document_ids: Sequence[str] | None, force: bool
 ) -> List[Tuple[str, str]]:
     with session_scope() as session:
         if document_ids:
@@ -325,20 +324,13 @@ def _fetch_target_documents(
                 .with_for_update(skip_locked=True)
             )
         else:
-            exists_tables = (
-                select(Table.id)
-                .where(Table.document_id == Document.id)
-                .exists()
-            )
+            exists_tables = select(Table.id).where(Table.document_id == Document.id).exists()
 
             if force:
                 # Force mode: can process any doc (before or after embeddings)
-                stmt = (
-                    select(Document.id, Document.s3_key)
-                    .where(
-                        Document.status.in_(
-                            [DocumentStatus.CHUNKS_BUILT.value, DocumentStatus.EMBEDDED.value]
-                        )
+                stmt = select(Document.id, Document.s3_key).where(
+                    Document.status.in_(
+                        [DocumentStatus.CHUNKS_BUILT.value, DocumentStatus.EMBEDDED.value]
                     )
                 )
             else:
@@ -371,11 +363,13 @@ def run_pipeline(
         if not all_targets:
             LOGGER.info("No documents found for table extraction.")
             return
-        LOGGER.info("Force mode: processing all %s documents in batches of %s", len(all_targets), batch_size)
+        LOGGER.info(
+            "Force mode: processing all %s documents in batches of %s", len(all_targets), batch_size
+        )
 
         # Process in batches
         for batch_start in range(0, len(all_targets), batch_size):
-            targets = all_targets[batch_start:batch_start + batch_size]
+            targets = all_targets[batch_start : batch_start + batch_size]
             _process_batch(targets, workers)
     else:
         # Incremental mode: fetch and process new documents until queue is empty

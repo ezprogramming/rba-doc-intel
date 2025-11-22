@@ -36,8 +36,6 @@ from typing import List, Optional
 
 from sentence_transformers import CrossEncoder
 
-from app.config import get_settings
-
 logger = logging.getLogger(__name__)
 
 # Default cross-encoder model for reranking
@@ -70,6 +68,7 @@ class RankedChunk:
     - Blending: Could combine both scores (e.g., 0.7*rerank + 0.3*original)
     - Analytics: Measure how much reranking changes the order
     """
+
     chunk_id: int
     document_id: str
     text: str
@@ -107,10 +106,7 @@ class Reranker:
     """
 
     def __init__(
-        self,
-        model_name: Optional[str] = None,
-        device: Optional[str] = None,
-        batch_size: int = 32
+        self, model_name: Optional[str] = None, device: Optional[str] = None, batch_size: int = 32
     ):
         """Initialize reranker (model loaded lazily on first use).
 
@@ -144,6 +140,7 @@ class Reranker:
         device = self.device
         if device is None:
             import torch
+
             if torch.cuda.is_available():
                 device = "cuda"
                 logger.info("Using NVIDIA GPU for reranking")
@@ -161,18 +158,13 @@ class Reranker:
         self._model = CrossEncoder(
             self.model_name,
             device=device,
-            default_activation_function=None  # Use raw logits
+            default_activation_function=None,  # Use raw logits
         )
 
         logger.info(f"Cross-encoder loaded on device: {device}")
         return self._model
 
-    def rerank(
-        self,
-        query: str,
-        chunks: List[dict],
-        top_k: int = 10
-    ) -> List[RankedChunk]:
+    def rerank(self, query: str, chunks: List[dict], top_k: int = 10) -> List[RankedChunk]:
         """Rerank chunks by query-document relevance using cross-encoder.
 
         Args:
@@ -222,23 +214,25 @@ class Reranker:
         scores = model.predict(
             pairs,
             batch_size=self.batch_size,
-            show_progress_bar=False  # Avoid cluttering logs
+            show_progress_bar=False,  # Avoid cluttering logs
         )
 
         # Combine chunks with their rerank scores
         ranked_chunks = []
         for idx, (chunk, rerank_score) in enumerate(zip(chunks, scores, strict=True)):
-            ranked_chunks.append(RankedChunk(
-                chunk_id=chunk["id"],
-                document_id=chunk["document_id"],
-                text=chunk["text"],
-                page_start=chunk.get("page_start", 0),
-                page_end=chunk.get("page_end", 0),
-                section_hint=chunk.get("section_hint"),
-                original_score=chunk.get("score", 0.0),
-                rerank_score=float(rerank_score),
-                rank=idx + 1  # Will be updated after sorting
-            ))
+            ranked_chunks.append(
+                RankedChunk(
+                    chunk_id=chunk["id"],
+                    document_id=chunk["document_id"],
+                    text=chunk["text"],
+                    page_start=chunk.get("page_start", 0),
+                    page_end=chunk.get("page_end", 0),
+                    section_hint=chunk.get("section_hint"),
+                    original_score=chunk.get("score", 0.0),
+                    rerank_score=float(rerank_score),
+                    rank=idx + 1,  # Will be updated after sorting
+                )
+            )
 
         # Sort by rerank score (descending)
         # Why not use original_score? Cross-encoder is more accurate for final ranking
@@ -258,8 +252,7 @@ class Reranker:
             # Log how much reranking changed the order
             # Example: If original rank 50 becomes rank 1, that's a big change
             original_rank_of_top = next(
-                (i for i, c in enumerate(chunks) if c["id"] == ranked_chunks[0].chunk_id),
-                -1
+                (i for i, c in enumerate(chunks) if c["id"] == ranked_chunks[0].chunk_id), -1
             )
             if original_rank_of_top > 5:
                 logger.info(
@@ -295,5 +288,5 @@ def create_reranker() -> Reranker:
     return Reranker(
         model_name=os.getenv("RERANKER_MODEL_NAME"),  # None = use default
         device=os.getenv("RERANKER_DEVICE"),  # None = auto-detect
-        batch_size=int(os.getenv("RERANKER_BATCH_SIZE", "32"))
+        batch_size=int(os.getenv("RERANKER_BATCH_SIZE", "32")),
     )

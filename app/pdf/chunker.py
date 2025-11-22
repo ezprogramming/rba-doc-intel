@@ -36,12 +36,12 @@ def _find_paragraph_boundary(text: str, target_pos: int, window: int = 200) -> i
     end = min(len(text), target_pos + window)
 
     # Look for double newline (paragraph break)
-    para_break = text.find('\n\n', start, end)
+    para_break = text.find("\n\n", start, end)
     if para_break != -1:
         return para_break + 2
 
     # Fallback: single newline
-    line_break = text.find('\n', start, end)
+    line_break = text.find("\n", start, end)
     if line_break != -1:
         return line_break + 1
 
@@ -64,7 +64,7 @@ def _get_sentence_overlap(text: str, num_sentences: int = 2) -> str:
     - Helps LLM maintain context across chunks
     """
     # Split on sentence boundaries (. ! ?)
-    sentences = re.split(r'[.!?]\s+', text)
+    sentences = re.split(r"[.!?]\s+", text)
 
     # Filter empty sentences
     sentences = [s.strip() for s in sentences if s.strip()]
@@ -74,7 +74,7 @@ def _get_sentence_overlap(text: str, num_sentences: int = 2) -> str:
 
     # Take last N sentences
     overlap_sentences = sentences[-num_sentences:]
-    return '. '.join(overlap_sentences) + '.'
+    return ". ".join(overlap_sentences) + "."
 
 
 def _contains_table_marker(text: str) -> bool:
@@ -92,7 +92,7 @@ def _contains_table_marker(text: str) -> bool:
     - "Row count:" from table chunks
     - "Columns:" from table chunks
     """
-    indicators = ['|', 'table', 'row count:', 'columns:', 'caption:']
+    indicators = ["|", "table", "row count:", "columns:", "caption:"]
     text_lower = text.lower()
     return any(ind in text_lower for ind in indicators)
 
@@ -114,7 +114,7 @@ def _detect_rba_section(text: str) -> str | None:
     - Numbered sections: "1. Introduction", "2.3 Forecast"
     """
     # Check first few lines
-    lines = text[:500].split('\n')[:5]
+    lines = text[:500].split("\n")[:5]
 
     for line in lines:
         line = line.strip()
@@ -123,10 +123,19 @@ def _detect_rba_section(text: str) -> str | None:
 
         # Pattern 1: Common RBA section keywords
         rba_keywords = [
-            'inflation', 'labour market', 'economic outlook',
-            'forecast', 'gdp', 'unemployment', 'wages',
-            'financial conditions', 'housing', 'consumption',
-            'investment', 'trade', 'monetary policy'
+            "inflation",
+            "labour market",
+            "economic outlook",
+            "forecast",
+            "gdp",
+            "unemployment",
+            "wages",
+            "financial conditions",
+            "housing",
+            "consumption",
+            "investment",
+            "trade",
+            "monetary policy",
         ]
 
         line_lower = line.lower()
@@ -137,16 +146,14 @@ def _detect_rba_section(text: str) -> str | None:
                 return line
 
         # Pattern 2: Numbered sections
-        if re.match(r'^\d+[\.\)]\s+[A-Z]', line):
+        if re.match(r"^\d+[\.\)]\s+[A-Z]", line):
             return line
 
     return None
 
 
 def chunk_pages(
-    clean_pages: List[str],
-    max_tokens: int = 768,
-    overlap_pct: float = 0.15
+    clean_pages: List[str], max_tokens: int = 768, overlap_pct: float = 0.15
 ) -> List[Chunk]:
     """
     Group cleaned page text into overlapping chunks using paragraph-aware,
@@ -194,7 +201,6 @@ def chunk_pages(
     start_idx = 0
 
     while start_idx < len(full_text):
-
         # Calculate target end position (rough estimate: 1 token ≈ 4.5 chars)
         target_chars = int(max_tokens * 4.5)
         rough_end = min(start_idx + target_chars, len(full_text))
@@ -208,6 +214,9 @@ def chunk_pages(
         if end_idx <= start_idx:
             # No valid boundary found, take at least some text to avoid infinite loop
             end_idx = min(start_idx + 100, len(full_text))
+            # Extra safety: if still stuck, consume all remaining text
+            if end_idx <= start_idx:
+                end_idx = len(full_text)
 
         # Extract candidate chunk
         chunk_text = full_text[start_idx:end_idx].strip()
@@ -222,18 +231,20 @@ def chunk_pages(
             end_idx = _find_paragraph_boundary(
                 full_text,
                 start_idx + strict_target,
-                window=100  # Smaller window for stricter control
+                window=100,  # Smaller window for stricter control
             )
             # CRITICAL: Ensure we always make forward progress
             if end_idx <= start_idx:
                 end_idx = min(start_idx + 100, len(full_text))
+                # Extra safety: if still stuck, consume all remaining text
+                if end_idx <= start_idx:
+                    end_idx = len(full_text)
             chunk_text = full_text[start_idx:end_idx].strip()
 
         # Table-aware: check if chunk contains table markers
         # If so, we could extend/contract boundary to avoid mid-table split
-        # For now, just detect (future: smart table boundary detection)
-        # Note: Currently unused, will be implemented when adding smart table splitting
-        _contains_table_marker(chunk_text)  # noqa: B018
+        # TODO: Implement smart table boundary detection
+        # _contains_table_marker(chunk_text) would be used here when implemented
 
         # Determine page_start and page_end for this chunk
         chunk_page_start = 0
@@ -308,9 +319,11 @@ def _extract_section_hint(text: str) -> str | None:
             return f"{enum.group(1)} {enum.group(2).strip()}"
 
         # Pattern 2: Chapter/Section labels
-        chapter = re.match(r"^(Chapter|Section|Appendix)\s+([A-Za-z0-9]+)[\.:]?\s+(.{3,80})",
-                           candidate,
-                           flags=re.IGNORECASE)
+        chapter = re.match(
+            r"^(Chapter|Section|Appendix)\s+([A-Za-z0-9]+)[\.:]?\s+(.{3,80})",
+            candidate,
+            flags=re.IGNORECASE,
+        )
         if chapter:
             label = chapter.group(1).title()
             return f"{label} {chapter.group(2)} {chapter.group(3).strip()}"

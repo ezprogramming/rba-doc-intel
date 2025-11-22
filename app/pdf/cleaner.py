@@ -28,20 +28,15 @@ from typing import List, Set, Tuple
 HEADER_PATTERNS = [
     # Pattern: "34    Reserve Bank of Australia" (page number + institution name)
     re.compile(r"^\s*\d+\s+Reserve Bank of Australia\s*$", re.IGNORECASE),
-
     # Pattern: "Page 12" or "Page 12 of 45"
     re.compile(r"^\s*Page\s+\d+(\s+of\s+\d+)?\s*$", re.IGNORECASE),
-
     # Pattern: "S T A T E M E N T   O N   M O N E T A R Y   P O L I C Y"
     # (spaced caps title style used in SMP headers)
     re.compile(r"^\s*S\s*T\s*A\s*T\s*E\s*M\s*E\s*N\s*T.*P\s*O\s*L\s*I\s*C\s*Y\s*$", re.I),
-
     # Pattern: "Financial Stability Review" (FSR header)
     re.compile(r"^\s*Financial\s+Stability\s+Review\s*$", re.IGNORECASE),
-
     # Pattern: "February 2025" (publication month/year in headers)
     re.compile(r"^\s*[A-Z][a-z]+\s+20\d{2}\s*$"),
-
     # Pattern: "ANNUAL REPORT 2024" (annual report headers)
     re.compile(r"^\s*ANNUAL\s+REPORT\s+\d{4}\s*$", re.IGNORECASE),
 ]
@@ -54,13 +49,10 @@ HEADER_PATTERNS = [
 FOOTER_PATTERNS = [
     # Pattern: "www.rba.gov.au" (website URL in footers)
     re.compile(r"^\s*www\.rba\.gov\.au\s*$", re.IGNORECASE),
-
     # Pattern: "© Reserve Bank of Australia 2025"
     re.compile(r"^\s*©\s*Reserve Bank.*20\d{2}\s*$", re.IGNORECASE),
-
     # Pattern: "2024 Reserve Bank" (short copyright in footers)
     re.compile(r"^\s*\d{4}\s+Reserve\s+Bank\s*$", re.IGNORECASE),
-
     # Pattern: Standalone page numbers (just "12" or "- 12 -")
     re.compile(r"^\s*-?\s*\d+\s*-?\s*$"),
 ]
@@ -93,34 +85,34 @@ def detect_repeating_headers_footers(pages: List[str]) -> Tuple[Set[str], Set[st
     total_pages = len(pages)
 
     for page in pages:
-        lines = [line.strip() for line in page.strip().split('\n') if line.strip()]
+        lines = [line.strip() for line in page.strip().split("\n") if line.strip()]
 
         if not lines:
             continue
 
         # Check first 3 lines for headers
         for line in lines[:3]:
-            line_counts[('header', line)] += 1
+            line_counts[("header", line)] += 1
 
         # Check last 3 lines for footers
         for line in lines[-3:]:
-            line_counts[('footer', line)] += 1
+            line_counts[("footer", line)] += 1
 
     # Lines appearing in 80%+ of pages are repeating headers/footers
     threshold = total_pages * 0.8
     headers = {
-        line for (typ, line), count in line_counts.items()
-        if typ == 'header' and count >= threshold
+        line for (typ, line), count in line_counts.items() if typ == "header" and count >= threshold
     }
     footers = {
-        line for (typ, line), count in line_counts.items()
-        if typ == 'footer' and count >= threshold
+        line for (typ, line), count in line_counts.items() if typ == "footer" and count >= threshold
     }
 
     return headers, footers
 
 
-def is_header_or_footer(line: str, repeating_headers: Set[str], repeating_footers: Set[str]) -> bool:
+def is_header_or_footer(
+    line: str, repeating_headers: Set[str], repeating_footers: Set[str]
+) -> bool:
     """Check if a line matches header/footer patterns.
 
     Args:
@@ -153,9 +145,7 @@ def is_header_or_footer(line: str, repeating_headers: Set[str], repeating_footer
 
 
 def clean_text(
-    text: str,
-    repeating_headers: Set[str] | None = None,
-    repeating_footers: Set[str] | None = None
+    text: str, repeating_headers: Set[str] | None = None, repeating_footers: Set[str] | None = None
 ) -> str:
     """Normalize whitespace and remove headers/footers while preserving paragraph structure.
 

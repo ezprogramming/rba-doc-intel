@@ -56,27 +56,24 @@ PHONE_PATTERN = re.compile(
 
 # Email addresses
 # Format: user@domain.com
-EMAIL_PATTERN = re.compile(
-    r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b"
-)
+EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b")
 
 # Credit card numbers (basic Luhn check)
 # Format: 16 digits (may have spaces/dashes)
-CREDIT_CARD_PATTERN = re.compile(
-    r"\b(?:\d{4}[\s-]?){3}\d{4}\b"
-)
+CREDIT_CARD_PATTERN = re.compile(r"\b(?:\d{4}[\s-]?){3}\d{4}\b")
 
 # Australian TFN (Tax File Number)
 # Format: XXX XXX XXX
-TFN_PATTERN = re.compile(
-    r"\b\d{3}\s?\d{3}\s?\d{3}\b"
-)
+# NOTE: This is a very broad pattern that will match any 9-digit sequence
+# Consider disabling or using a more sophisticated validation (e.g., Luhn-like algorithm)
+# For now, requiring spaces/hyphens to reduce false positives
+TFN_PATTERN = re.compile(r"\bTFN[:\s]+\d{3}[\s-]\d{3}[\s-]\d{3}\b", re.IGNORECASE)
 
 # Australian addresses (simple pattern)
 # Format: Number Street, Suburb State Postcode
 ADDRESS_PATTERN = re.compile(
     r"\d+\s+[A-Za-z\s]+(?:Street|St|Road|Rd|Avenue|Ave|Drive|Dr|Court|Ct|Lane|Ln|Way|Terrace|Tce),\s*[A-Za-z\s]+(?:NSW|VIC|QLD|SA|WA|TAS|NT|ACT)\s+\d{4}",
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 
 
@@ -90,23 +87,20 @@ ADDRESS_PATTERN = re.compile(
 
 PROMPT_INJECTION_PATTERNS = [
     # "Ignore previous instructions and..."
-    re.compile(r"ignore\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions|commands|rules)", re.IGNORECASE),
-
+    re.compile(
+        r"ignore\s+(?:all\s+)?(?:previous|prior|above)\s+(?:instructions|commands|rules)",
+        re.IGNORECASE,
+    ),
     # "You are now a..."
     re.compile(r"you\s+are\s+now\s+(?:a|an)", re.IGNORECASE),
-
     # "Disregard"
     re.compile(r"disregard\s+(?:all|any|the)", re.IGNORECASE),
-
     # System role manipulation
     re.compile(r"(?:system|assistant):\s*", re.IGNORECASE),
-
     # Delimiter injection (trying to close context)
     re.compile(r"```|\[\/INST\]|\<\/s\>|\[SYSTEM\]", re.IGNORECASE),
-
     # "Forget all"
     re.compile(r"forget\s+(?:all|everything|your)", re.IGNORECASE),
-
     # "New instruction"
     re.compile(r"new\s+(?:instruction|command|rule)", re.IGNORECASE),
 ]
@@ -117,19 +111,21 @@ PROMPT_INJECTION_PATTERNS = [
 # Basic keyword-based toxicity detection
 # Limitations: High false positive rate, misses context
 # For production: Use ML-based classifiers (Perspective API, Azure Content Safety)
+#
+# IMPORTANT: This list is intentionally minimal to reduce false positives
+# Words like "hate", "kill", "attack" have many legitimate uses in news/finance
+# (e.g., "inflation kills growth", "hostile takeover attack")
 
 TOXIC_KEYWORDS = {
-    # Profanity (sample list, not comprehensive)
-    "fuck", "shit", "damn",
-
-    # Hate speech indicators
-    "hate", "kill",
-
-    # Self-harm indicators
-    "suicide", "self-harm",
-
-    # Violence
-    "bomb", "weapon", "attack"
+    # Severe profanity only (excluding mild words with legitimate uses)
+    "fuck",
+    "shit",
+    # Self-harm (specific phrases to avoid false positives)
+    "commit suicide",
+    "kill myself",
+    # Specific threats (not general words like "kill" or "attack")
+    "make a bomb",
+    "build a weapon",
 }
 
 
@@ -148,6 +144,7 @@ class SafetyCheckResult:
         if not result.is_safe:
             return "I cannot process this request due to safety concerns."
     """
+
     is_safe: bool
     violations: List[str]
     details: Optional[str] = None
@@ -359,7 +356,7 @@ def check_query_safety(query: str) -> SafetyCheckResult:
         is_safe=is_safe,
         violations=violations,
         details="; ".join(violations) if violations else None,
-        confidence=1.0 if violations else 0.95  # High confidence for regex matches
+        confidence=1.0 if violations else 0.95,  # High confidence for regex matches
     )
 
     if not is_safe:
@@ -416,7 +413,7 @@ def check_answer_safety(answer: str) -> SafetyCheckResult:
         is_safe=is_safe,
         violations=violations,
         details="; ".join(violations) if violations else None,
-        confidence=1.0 if violations else 0.95
+        confidence=1.0 if violations else 0.95,
     )
 
     if not is_safe:

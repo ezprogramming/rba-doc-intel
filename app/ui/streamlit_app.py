@@ -33,7 +33,6 @@ from app.db.session import session_scope
 from app.rag.hooks import hooks
 from app.rag.pipeline import answer_query
 
-
 st.set_page_config(page_title="RBA Document Intelligence", layout="wide")
 st.title("RBA Document Intelligence Platform")
 
@@ -84,22 +83,17 @@ def store_feedback(message_id: int, score: int, comment: str | None = None) -> N
     with session_scope() as session:
         # Check if feedback already exists for this message
         # Why check? User might change their mind (up → down or vice versa)
-        existing = session.query(Feedback).filter(
-            Feedback.chat_message_id == message_id
-        ).first()
+        existing = session.query(Feedback).filter(Feedback.chat_message_id == message_id).first()
 
         if existing:
             # Update existing feedback
-            existing.score = score
+            # Type ignore needed because SQLAlchemy Column types are complex
+            existing.score = score  # type: ignore[assignment]
             if comment:
-                existing.comment = comment
+                existing.comment = comment  # type: ignore[assignment]
         else:
             # Create new feedback
-            feedback = Feedback(
-                chat_message_id=message_id,
-                score=score,
-                comment=comment
-            )
+            feedback = Feedback(chat_message_id=message_id, score=score, comment=comment)
             session.add(feedback)
 
     hooks.emit(
@@ -151,7 +145,7 @@ def render_history() -> None:
                         store_feedback(message_id, score=1)
                         st.session_state.feedback_state[message_id] = 1
                         st.success("Thanks for your feedback!")
-                        st.experimental_rerun()
+                        st.rerun()
 
             with col2:
                 thumb_down_label = "👎" if current_feedback == -1 else "👎"
@@ -160,7 +154,7 @@ def render_history() -> None:
                         store_feedback(message_id, score=-1)
                         st.session_state.feedback_state[message_id] = -1
                         st.warning("Feedback recorded. What went wrong?")
-                        st.experimental_rerun()
+                        st.rerun()
 
             if current_feedback == 1:
                 with col3:
@@ -179,9 +173,7 @@ def render_history() -> None:
                     else "pages n/a"
                 )
                 section = f" · {evidence['section_hint']}" if evidence.get("section_hint") else ""
-                st.write(
-                    f"- {evidence['doc_type']} · {evidence['title']}{section} · {page_label}"
-                )
+                st.write(f"- {evidence['doc_type']} · {evidence['title']}{section} · {page_label}")
                 st.caption(evidence["snippet"])
 
         # Divider between messages
@@ -252,7 +244,7 @@ def handle_submit(question: str, use_reranking: bool) -> None:
                 session.query(ChatMessage)
                 .filter(
                     ChatMessage.session_id == UUID(st.session_state.chat_session_id),
-                    ChatMessage.role == "assistant"
+                    ChatMessage.role == "assistant",
                 )
                 .order_by(ChatMessage.created_at.desc())
                 .first()

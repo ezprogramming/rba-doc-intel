@@ -43,7 +43,9 @@ class MinioStorage(StorageAdapter):
         file_obj.seek(0, os.SEEK_END)
         size = file_obj.tell() - current_pos
         file_obj.seek(current_pos)
-        self._client.put_object(bucket, object_name, file_obj, length=size, part_size=5 * 1024 * 1024)
+        self._client.put_object(
+            bucket, object_name, file_obj, length=size, part_size=5 * 1024 * 1024
+        )
 
     def download_file(self, bucket: str, object_name: str, destination: Path) -> None:
         self._client.fget_object(bucket, object_name, str(destination))

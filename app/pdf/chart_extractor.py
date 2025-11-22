@@ -61,12 +61,7 @@ class ChartExtractor:
     - Won't detect vector-based charts (rare in RBA PDFs)
     """
 
-    def __init__(
-        self,
-        min_width: int = 200,
-        min_height: int = 150,
-        extract_images: bool = False
-    ):
+    def __init__(self, min_width: int = 200, min_height: int = 150, extract_images: bool = False):
         """Initialize chart extractor.
 
         Args:
@@ -184,16 +179,10 @@ class ChartExtractor:
             return img_dict["image"]
 
         except Exception as e:
-            logger.warning(
-                f"Failed to extract image for chart on page {chart.page_number}: {e}"
-            )
+            logger.warning(f"Failed to extract image for chart on page {chart.page_number}: {e}")
             return None
 
-    def extract_page_charts(
-        self,
-        pdf_path: Path,
-        page_num: int
-    ) -> List[ChartMetadata]:
+    def extract_page_charts(self, pdf_path: Path, page_num: int) -> List[ChartMetadata]:
         """Extract all charts from a specific PDF page.
 
         Args:

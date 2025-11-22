@@ -30,15 +30,15 @@ from dataclasses import dataclass
 from typing import Callable, List
 from uuid import UUID
 
-logger = logging.getLogger(__name__)
-
 from app.db.models import ChatMessage, ChatSession, Table
 from app.db.session import session_scope
 from app.embeddings.client import EmbeddingClient
-from app.rag.llm_client import LLMClient
 from app.rag.hooks import hooks
+from app.rag.llm_client import LLMClient
 from app.rag.retriever import RetrievedChunk, retrieve_similar_chunks
 from app.rag.safety import check_answer_safety, check_query_safety
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -77,7 +77,11 @@ def _compose_analysis(chunks: List[RetrievedChunk]) -> str:
         return "No supporting excerpts retrieved; unable to ground an answer."
     summaries = []
     for chunk in chunks:
-        page_range = f"pages {chunk.page_start}-{chunk.page_end}" if chunk.page_start is not None else "unspecified pages"
+        page_range = (
+            f"pages {chunk.page_start}-{chunk.page_end}"
+            if chunk.page_start is not None
+            else "unspecified pages"
+        )
         summaries.append(f"{chunk.title} ({chunk.doc_type}, {page_range})")
     return "Answer grounded in " + "; ".join(summaries)
 
@@ -144,16 +148,14 @@ def answer_query(
                 "Please rephrase your question without sensitive information "
                 "or potentially harmful content."
             )
-            logger.warning(
-                f"Query blocked by safety check: {safety_result.violations}"
-            )
+            logger.warning(f"Query blocked by safety check: {safety_result.violations}")
 
             # Return error response
             # Why still return AnswerResponse? Consistent interface for UI
             return AnswerResponse(
                 answer=error_message,
                 evidence=[],
-                analysis=f"Query blocked: {safety_result.details}"
+                analysis=f"Query blocked: {safety_result.details}",
             )
 
     hooks.emit(
@@ -183,11 +185,7 @@ def answer_query(
         )
         table_ids = {chunk.table_id for chunk in chunks if chunk.table_id is not None}
         if table_ids:
-            table_rows = (
-                session.query(Table)
-                .filter(Table.id.in_(table_ids))
-                .all()
-            )
+            table_rows = session.query(Table).filter(Table.id.in_(table_ids)).all()
             table_lookup = {
                 table_row.id: {
                     "table_id": table_row.id,
@@ -223,6 +221,7 @@ def answer_query(
 
     # Step 4: Generate answer using LLM
     if stream_handler:
+
         def wrapped(delta: str) -> None:
             hooks.emit("rag:stream_chunk", session_id=str(session_id_value), token_size=len(delta))
             stream_handler(delta)
@@ -241,9 +240,7 @@ def answer_query(
         if not answer_safety.is_safe:
             # Answer violated safety policies
             # Redact answer and return generic response
-            logger.warning(
-                f"Answer blocked by safety check: {answer_safety.violations}"
-            )
+            logger.warning(f"Answer blocked by safety check: {answer_safety.violations}")
             answer_text = (
                 "I apologize, but I cannot provide this information due to "
                 "safety and privacy concerns. Please rephrase your question."

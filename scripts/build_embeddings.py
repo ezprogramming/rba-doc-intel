@@ -23,12 +23,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Sequence
 
-from sqlalchemy import update
-
 from app.config import get_settings
 from app.db.models import Chunk, Document, DocumentStatus
 from app.db.session import session_scope
 from app.embeddings.indexer import generate_missing_embeddings
+from sqlalchemy import update
 
 LOGGER = logging.getLogger(__name__)
 
@@ -173,7 +172,7 @@ def main(
                         % max_consecutive_failures
                     )
 
-                backoff_seconds = min(2 ** consecutive_failures, 30)
+                backoff_seconds = min(2**consecutive_failures, 30)
                 LOGGER.warning(
                     "One or more embedding batches failed (consecutive failures: %s). "
                     "Retrying after %.1f seconds...",
@@ -217,19 +216,22 @@ if __name__ == "__main__":
         "--batch-size",
         type=int,
         default=settings.embedding_batch_size,
-        help=f"Chunks per batch (default from .env: {settings.embedding_batch_size}). Larger = more GPU memory usage"
+        help=(
+            f"Chunks per batch (default from .env: {settings.embedding_batch_size}). "
+            "Larger = more GPU memory usage"
+        ),
     )
     parser.add_argument(
         "--parallel",
         type=int,
         default=settings.embedding_parallel_batches,
-        help=f"Parallel batches (default from .env: {settings.embedding_parallel_batches}). More = higher throughput but more DB load"
+        help=(
+            f"Parallel batches (default from .env: {settings.embedding_parallel_batches}). "
+            "More = higher throughput but more DB load"
+        ),
     )
     parser.add_argument(
-        "--max-iter",
-        type=int,
-        default=1000,
-        help="Max iterations (default: 1000, safety limit)"
+        "--max-iter", type=int, default=1000, help="Max iterations (default: 1000, safety limit)"
     )
     parser.add_argument(
         "--reset",

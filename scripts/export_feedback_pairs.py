@@ -19,10 +19,9 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List
 
-from sqlalchemy import select
-
 from app.db.models import ChatMessage, Feedback
 from app.db.session import session_scope
+from sqlalchemy import select
 
 
 def _resolve_prompt(session, assistant_message: ChatMessage) -> str | None:
@@ -69,7 +68,9 @@ def collect_feedback_pairs(min_positive_score: int = 1) -> Dict[str, Dict[str, L
     return buckets
 
 
-def export_jsonl(buckets: Dict[str, Dict[str, List[str]]], output: Path, max_pairs_per_prompt: int) -> int:
+def export_jsonl(
+    buckets: Dict[str, Dict[str, List[str]]], output: Path, max_pairs_per_prompt: int
+) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     count = 0
     with output.open("w", encoding="utf-8") as f:

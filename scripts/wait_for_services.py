@@ -10,7 +10,6 @@ from contextlib import suppress
 import psycopg
 from minio import Minio
 
-
 POSTGRES_DSN = os.environ.get("POSTGRES_DSN") or os.environ.get("DATABASE_URL")
 if POSTGRES_DSN and "+psycopg" in POSTGRES_DSN:
     POSTGRES_DSN = POSTGRES_DSN.replace("+psycopg", "")

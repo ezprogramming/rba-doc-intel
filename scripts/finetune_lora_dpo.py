@@ -23,7 +23,6 @@ from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainingArguments
 from trl import DPOTrainer
 
-
 HAS_CUDA = torch.cuda.is_available()
 _MPS = getattr(torch.backends, "mps", None)
 HAS_MPS = bool(_MPS and _MPS.is_available())
@@ -31,7 +30,9 @@ HAS_MPS = bool(_MPS and _MPS.is_available())
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="LoRA+DPO preference tuning")
-    parser.add_argument("--dataset", type=Path, required=True, help="JSONL file from export_feedback_pairs.py")
+    parser.add_argument(
+        "--dataset", type=Path, required=True, help="JSONL file from export_feedback_pairs.py"
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("models/lora-dpo"))
     parser.add_argument("--base-model", default="microsoft/phi-2", help="HF model id to fine-tune")
     parser.add_argument("--batch-size", type=int, default=1)

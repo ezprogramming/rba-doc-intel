@@ -60,7 +60,7 @@ LEXICAL_WEIGHT = 0.3
 RECENCY_WEIGHT = 0.25
 RECENCY_HALF_LIFE_YEARS = 1.5  # sharper decay to favour most recent content
 
-YEAR_PATTERN = re.compile(r"(?:19|20)\\d{2}")
+YEAR_PATTERN = re.compile(r"(?:19|20)\d{2}")
 
 
 def _extract_target_year(query_text: str) -> int | None:
@@ -229,7 +229,7 @@ def retrieve_similar_chunks(
             .where(
                 Chunk.text_tsv.is_not(None),
                 lexical_score > 0,
-                Chunk.text_tsv.op('@@')(ts_query),
+                Chunk.text_tsv.op("@@")(ts_query),
             )
             .order_by(desc(lexical_score))
             .limit(retrieval_limit)  # Use dynamic limit based on reranking
@@ -265,9 +265,9 @@ def retrieve_similar_chunks(
     if recency_bias and target_year:
         allowed_years = {target_year, target_year - 1}
         filtered = [
-            item for item in items
-            if item["publication_date"]
-            and item["publication_date"].year in allowed_years
+            item
+            for item in items
+            if item["publication_date"] and item["publication_date"].year in allowed_years
         ]
 
         if filtered:
@@ -297,8 +297,9 @@ def retrieve_similar_chunks(
                 text=item["text"],
                 doc_type=item["doc_type"],
                 title=item["title"],
-                publication_date=
-                    item["publication_date"].isoformat() if item["publication_date"] else None,
+                publication_date=item["publication_date"].isoformat()
+                if item["publication_date"]
+                else None,
                 page_start=item["page_start"],
                 page_end=item["page_end"],
                 section_hint=item["section_hint"],
@@ -344,23 +345,18 @@ def retrieve_similar_chunks(
 
         # Rerank candidates using cross-encoder
         # This rescores each candidate based on query-document interaction
-        reranked = reranker.rerank(
-            query=query_text,
-            chunks=candidates,
-            top_k=limit
-        )
+        reranked = reranker.rerank(query=query_text, chunks=candidates, top_k=limit)
 
         # Convert reranked results back to RetrievedChunk format
         # Why convert back? Pipeline expects RetrievedChunk dataclass
         final_results = []
         for ranked_chunk in reranked:
             # Find original chunk to get metadata (doc_type, title, publication_date)
-            original = next(
-                (r for r in results if r.chunk_id == ranked_chunk.chunk_id),
-                None
-            )
+            original = next((r for r in results if r.chunk_id == ranked_chunk.chunk_id), None)
             if original is None:
-                logger.warning(f"Reranked chunk {ranked_chunk.chunk_id} not found in original results")
+                logger.warning(
+                    f"Reranked chunk {ranked_chunk.chunk_id} not found in original results"
+                )
                 continue
 
             final_results.append(

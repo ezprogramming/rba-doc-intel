@@ -15,22 +15,21 @@ Performance:
 from __future__ import annotations
 
 import argparse
-import atexit
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import List, cast
 
-from sqlalchemy import select, update
-
 from app.config import get_settings
 from app.db.models import Chunk as ChunkModel
 from app.db.models import Document, DocumentStatus, Page
 from app.db.session import session_scope
 from app.pdf import cleaner, parser
-from app.pdf.chunker import Chunk as ChunkSegment, chunk_pages
+from app.pdf.chunker import Chunk as ChunkSegment
+from app.pdf.chunker import chunk_pages
 from app.storage import MinioStorage
+from sqlalchemy import select, update
 
 LOGGER = logging.getLogger(__name__)
 
@@ -54,9 +53,7 @@ def _reset_orphaned_processing_documents() -> int:
         result = session.execute(stmt)
         count = result.rowcount
         if count > 0:
-            LOGGER.warning(
-                "Reset %d orphaned PROCESSING documents from previous run", count
-            )
+            LOGGER.warning("Reset %d orphaned PROCESSING documents from previous run", count)
         return count
 
 
@@ -79,9 +76,13 @@ def _download_to_temp(storage: MinioStorage, s3_key: str) -> Path:
     return temp_path
 
 
-def _persist_pages(session, document: Document, raw_pages: List[str], clean_pages: List[str]) -> None:
+def _persist_pages(
+    session, document: Document, raw_pages: List[str], clean_pages: List[str]
+) -> None:
     session.query(Page).filter(Page.document_id == document.id).delete(synchronize_session=False)
-    for index, (raw_text, clean_text) in enumerate(zip(raw_pages, clean_pages, strict=True), start=1):
+    for index, (raw_text, clean_text) in enumerate(
+        zip(raw_pages, clean_pages, strict=True), start=1
+    ):
         session.add(
             Page(
                 document_id=document.id,
@@ -93,7 +94,9 @@ def _persist_pages(session, document: Document, raw_pages: List[str], clean_page
 
 
 def _persist_chunks(session, document: Document, segments: List[ChunkSegment]) -> None:
-    session.query(ChunkModel).filter(ChunkModel.document_id == document.id).delete(synchronize_session=False)
+    session.query(ChunkModel).filter(ChunkModel.document_id == document.id).delete(
+        synchronize_session=False
+    )
     for segment in segments:
         session.add(
             ChunkModel(
@@ -163,14 +166,11 @@ def process_document(document_id: str, storage: MinioStorage) -> None:
         raw_pages = parser.extract_pages(temp_path)
 
         # Detect repeating headers/footers across ALL pages
-        repeating_headers, repeating_footers = cleaner.detect_repeating_headers_footers(
-            raw_pages
-        )
+        repeating_headers, repeating_footers = cleaner.detect_repeating_headers_footers(raw_pages)
 
         # Clean each page using both pattern-based and frequency-based detection
         clean_pages = [
-            cleaner.clean_text(page, repeating_headers, repeating_footers)
-            for page in raw_pages
+            cleaner.clean_text(page, repeating_headers, repeating_footers) for page in raw_pages
         ]
 
         # Chunk cleaned pages for RAG
@@ -286,9 +286,7 @@ def main(batch_size: int = 16, max_workers: int = 2) -> None:
     if total_processed == 0 and total_failed == 0:
         LOGGER.info("No NEW documents to process.")
     else:
-        LOGGER.info(
-            f"Processing complete. Success: {total_processed}, Failed: {total_failed}"
-        )
+        LOGGER.info(f"Processing complete. Success: {total_processed}, Failed: {total_failed}")
 
 
 if __name__ == "__main__":
@@ -300,13 +298,13 @@ if __name__ == "__main__":
         "--batch-size",
         type=int,
         default=settings.pdf_batch_size,
-        help=f"Documents to fetch per batch (default from .env: {settings.pdf_batch_size})"
+        help=f"Documents to fetch per batch (default from .env: {settings.pdf_batch_size})",
     )
     arg_parser.add_argument(
         "--workers",
         type=int,
         default=settings.pdf_max_workers,
-        help=f"Parallel worker threads (default from .env: {settings.pdf_max_workers})"
+        help=f"Parallel worker threads (default from .env: {settings.pdf_max_workers})",
     )
     args = arg_parser.parse_args()
 

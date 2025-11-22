@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from typing import Callable, Dict, List, Protocol
+from typing import Dict, List, Protocol
 
 logger = logging.getLogger(__name__)
 
 
 class HookHandler(Protocol):
-    def __call__(self, event: str, payload: Dict[str, object]) -> None:  # pragma: no cover - protocol
+    def __call__(
+        self, event: str, payload: Dict[str, object]
+    ) -> None:  # pragma: no cover - protocol
         """Handle a hook emission."""
 
 
@@ -32,7 +34,9 @@ class HookBus:
         for handler in handlers:
             try:
                 handler(event, payload)
-            except Exception as exc:  # pragma: no cover - instrumentation should never break pipeline
+            except (
+                Exception
+            ) as exc:  # pragma: no cover - instrumentation should never break pipeline
                 logger.debug("Hook handler failed", exc_info=exc)
 
 

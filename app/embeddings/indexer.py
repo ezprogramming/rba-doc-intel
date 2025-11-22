@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import os
-from typing import List, Set
+from typing import Set
 from uuid import UUID
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 
 from app.db.models import Chunk, Document, DocumentStatus
 from app.db.session import session_scope
