@@ -42,6 +42,18 @@ class Settings:
     reranker_model_name: str | None = None  # HuggingFace model ID (None = use default)
     reranker_device: str | None = None  # 'cpu', 'cuda', 'mps', or None for auto-detect
     reranker_batch_size: int = 32  # Batch size for reranking (higher = faster but more memory)
+    rerank_multiplier: int = 10  # Retrieve N*multiplier candidates for reranking
+
+    # Phase 6: RAG quality improvements
+    use_mmr: bool = True  # Enable Maximal Marginal Relevance for diversity
+    mmr_lambda: float = 0.5  # 0=max diversity, 1=max relevance
+    use_rrf: bool = False  # Use Reciprocal Rank Fusion instead of weighted combination
+    semantic_weight: float = 0.7  # Semantic search weight (used when USE_RRF=0)
+    lexical_weight: float = 0.3  # Lexical search weight (used when USE_RRF=0)
+    recency_weight: float = 0.25  # Recency bias weight
+    table_boost_data_queries: float = 0.5  # Boost for table chunks when data query detected
+    max_context_tokens: int = 6000  # Token budget for LLM context window
+    chunk_quality_threshold: float = 0.5  # Min quality score for chunks (0.0-1.0)
 
 
 def _get_bool(value: str | None, default: bool = False) -> bool:
@@ -71,6 +83,32 @@ def _get_positive_int(key: str, value: str, min_value: int = 1) -> int:
 
     if parsed < min_value:
         raise ValueError(f"{key} must be >= {min_value}, got: {parsed}")
+
+    return parsed
+
+
+def _get_float(key: str, value: str, min_value: float = 0.0, max_value: float = 1.0) -> float:
+    """Parse and validate a float from environment variable.
+
+    Args:
+        key: Environment variable name (for error messages)
+        value: Raw string value from os.environ
+        min_value: Minimum allowed value (default: 0.0)
+        max_value: Maximum allowed value (default: 1.0)
+
+    Returns:
+        Validated float
+
+    Raises:
+        ValueError: If value is not a float or outside allowed range
+    """
+    try:
+        parsed = float(value)
+    except ValueError as e:
+        raise ValueError(f"{key} must be a float, got: {value}") from e
+
+    if not (min_value <= parsed <= max_value):
+        raise ValueError(f"{key} must be between {min_value} and {max_value}, got: {parsed}")
 
     return parsed
 
@@ -144,5 +182,41 @@ def get_settings() -> Settings:
         reranker_device=os.environ.get("RERANKER_DEVICE"),  # None = auto-detect
         reranker_batch_size=_get_positive_int(
             "RERANKER_BATCH_SIZE", os.environ.get("RERANKER_BATCH_SIZE", "32"), min_value=1
+        ),
+        rerank_multiplier=_get_positive_int(
+            "RERANK_MULTIPLIER", os.environ.get("RERANK_MULTIPLIER", "10"), min_value=1
+        ),
+        # Phase 6: RAG quality improvements
+        use_mmr=_get_bool(os.environ.get("USE_MMR"), default=True),
+        mmr_lambda=_get_float(
+            "MMR_LAMBDA", os.environ.get("MMR_LAMBDA", "0.5"), min_value=0.0, max_value=1.0
+        ),
+        use_rrf=_get_bool(os.environ.get("USE_RRF"), default=False),
+        semantic_weight=_get_float(
+            "SEMANTIC_WEIGHT",
+            os.environ.get("SEMANTIC_WEIGHT", "0.7"),
+            min_value=0.0,
+            max_value=1.0,
+        ),
+        lexical_weight=_get_float(
+            "LEXICAL_WEIGHT", os.environ.get("LEXICAL_WEIGHT", "0.3"), min_value=0.0, max_value=1.0
+        ),
+        recency_weight=_get_float(
+            "RECENCY_WEIGHT", os.environ.get("RECENCY_WEIGHT", "0.25"), min_value=0.0, max_value=1.0
+        ),
+        table_boost_data_queries=_get_float(
+            "TABLE_BOOST_DATA_QUERIES",
+            os.environ.get("TABLE_BOOST_DATA_QUERIES", "0.5"),
+            min_value=0.0,
+            max_value=2.0,  # Allow up to 200% boost
+        ),
+        max_context_tokens=_get_positive_int(
+            "MAX_CONTEXT_TOKENS", os.environ.get("MAX_CONTEXT_TOKENS", "6000"), min_value=100
+        ),
+        chunk_quality_threshold=_get_float(
+            "CHUNK_QUALITY_THRESHOLD",
+            os.environ.get("CHUNK_QUALITY_THRESHOLD", "0.5"),
+            min_value=0.0,
+            max_value=1.0,
         ),
     )

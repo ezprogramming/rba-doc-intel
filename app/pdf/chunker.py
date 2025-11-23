@@ -97,6 +97,114 @@ def _contains_table_marker(text: str) -> bool:
     return any(ind in text_lower for ind in indicators)
 
 
+def _find_table_aware_boundary(text: str, target_pos: int, window: int = 200) -> int:
+    """Find boundary that avoids splitting tables mid-content.
+
+    Args:
+        text: Full text to search in
+        target_pos: Desired split position
+        window: Look within ±window chars of target
+
+    Returns:
+        Adjusted position that doesn't split tables
+
+    Strategy:
+    1. Check if we're near a table (within window)
+    2. If table detected, try to extend past it or contract before it
+    3. Fallback to regular paragraph boundary
+
+    Why this matters:
+    - Prevents corrupting structured data
+    - Ensures complete tables in chunks
+    - Better retrieval of numerical data
+    """
+    start = max(0, target_pos - window)
+    end = min(len(text), target_pos + window)
+
+    # Sample text around target position
+    sample = text[start:end]
+
+    # If table markers detected near boundary
+    if _contains_table_marker(sample):
+        # Try to find end of table (double newline after table content)
+        # Tables often end with blank line before next paragraph
+        table_end = text.find("\n\n", target_pos, target_pos + window * 2)
+        if table_end != -1:
+            # Extend past table
+            return table_end + 2
+
+        # If can't find table end, try to find table start and contract before it
+        # Look backward for "Table" keyword or table marker
+        search_start = max(0, target_pos - window * 2)
+        table_indicators = ["table", "|", "caption:"]
+        for indicator in table_indicators:
+            indicator_pos = text.lower().rfind(indicator, search_start, target_pos)
+            if indicator_pos != -1:
+                # Found table start, look for paragraph break before it
+                before_table = text.rfind("\n\n", search_start, indicator_pos)
+                if before_table != -1:
+                    return before_table + 2
+
+    # Fallback to regular paragraph boundary
+    return _find_paragraph_boundary(text, target_pos, window)
+
+
+def _score_chunk_quality(text: str) -> float:
+    """Score chunk quality based on heuristics.
+
+    Args:
+        text: Chunk text to evaluate
+
+    Returns:
+        Quality score between 0.0 and 1.0
+
+    Quality factors:
+    - Sentence boundary ratio (complete sentences)
+    - Length variance (not too short/long)
+    - Basic coherence signals
+
+    Why filter low-quality chunks?
+    - Reduces index noise
+    - Improves retrieval precision
+    - Better embedding quality
+    """
+    if not text or len(text) < 10:
+        return 0.0
+
+    score = 1.0
+
+    # Factor 1: Sentence completeness
+    # Count sentence-ending punctuation
+    sentence_endings = text.count(".") + text.count("!") + text.count("?")
+    # Rough sentence count (split on whitespace)
+    words = text.split()
+    word_count = len(words)
+
+    if word_count > 0:
+        # Ideal: ~20-30 words per sentence
+        avg_words_per_sentence = word_count / max(1, sentence_endings)
+        # Penalize very long run-ons (>100 words/sentence) or very short fragments (<5)
+        if avg_words_per_sentence > 100:
+            score *= 0.7
+        elif avg_words_per_sentence < 5:
+            score *= 0.8
+
+    # Factor 2: Length variance
+    # Penalize very short chunks (likely fragments)
+    if word_count < 50:
+        score *= 0.6
+    # Slightly penalize very long chunks (may be corrupted or table dumps)
+    elif word_count > 2000:
+        score *= 0.9
+
+    # Factor 3: Check for broken encoding or excessive special chars
+    special_char_ratio = sum(not c.isalnum() and not c.isspace() for c in text) / len(text)
+    if special_char_ratio > 0.3:  # More than 30% special characters
+        score *= 0.7
+
+    return min(1.0, max(0.0, score))
+
+
 def _detect_rba_section(text: str) -> str | None:
     """Detect RBA-specific section headings.
 
@@ -153,11 +261,14 @@ def _detect_rba_section(text: str) -> str | None:
 
 
 def chunk_pages(
-    clean_pages: List[str], max_tokens: int = 768, overlap_pct: float = 0.15
+    clean_pages: List[str],
+    max_tokens: int = 768,
+    overlap_pct: float = 0.15,
+    quality_threshold: float = 0.5,
 ) -> List[Chunk]:
     """
     Group cleaned page text into overlapping chunks using paragraph-aware,
-    section-aware, and table-aware recursive splitting.
+    section-aware, and table-aware recursive splitting with quality filtering.
 
     Smart boundary detection order:
     1. Paragraph breaks (\\n\\n) - preserves semantic units
@@ -168,20 +279,19 @@ def chunk_pages(
     - Sentence-based (not word-based) to preserve context
     - Default 2 sentences overlap between chunks
 
-    Table-aware:
-    - Detects table markers to avoid splitting tables mid-content
-    - Preserves table structure integrity
+    Phase 6 improvements:
+    - Table-aware boundaries: Extends/contracts to avoid mid-table splits
+    - Chunk quality scoring: Filters low-quality fragments
+    - Configurable quality threshold (default: 0.5)
 
     Args:
         clean_pages: List of cleaned page texts
         max_tokens: Maximum tokens per chunk (default: 768)
         overlap_pct: Percentage overlap between chunks (default: 0.15 = 15%)
+        quality_threshold: Minimum quality score (0.0-1.0) to keep chunk (default: 0.5)
 
-    Why these improvements?
-    - Paragraph boundaries: Preserves semantic context, avoids mid-thought splits
-    - Sentence overlap: Better than word-based, maintains complete ideas
-    - Table detection: Prevents corrupting structured data
-    - Section hints: RBA-specific patterns improve retrieval precision
+    Returns:
+        List of high-quality chunks with metadata
     """
     chunks: List[Chunk] = []
     chunk_index = 0
@@ -205,9 +315,9 @@ def chunk_pages(
         target_chars = int(max_tokens * 4.5)
         rough_end = min(start_idx + target_chars, len(full_text))
 
-        # Find smart boundary using paragraph-aware helper
-        # This replaces the inline paragraph/sentence search with a reusable function
-        end_idx = _find_paragraph_boundary(full_text, rough_end, window=200)
+        # Phase 6: Use table-aware boundary detection
+        # This extends/contracts boundaries to avoid splitting tables mid-content
+        end_idx = _find_table_aware_boundary(full_text, rough_end, window=200)
 
         # CRITICAL: Ensure we always make forward progress
         # If boundary finder returns same position (no newlines found), force advance
@@ -226,9 +336,9 @@ def chunk_pages(
 
         # If still over limit after boundary adjustment, force a hard split
         if len(tokens) > max_tokens * 1.2:  # 20% tolerance
-            # Recalculate with stricter limit
+            # Recalculate with stricter limit, still using table-aware detection
             strict_target = int(max_tokens * 4.0)
-            end_idx = _find_paragraph_boundary(
+            end_idx = _find_table_aware_boundary(
                 full_text,
                 start_idx + strict_target,
                 window=100,  # Smaller window for stricter control
@@ -240,11 +350,6 @@ def chunk_pages(
                 if end_idx <= start_idx:
                     end_idx = len(full_text)
             chunk_text = full_text[start_idx:end_idx].strip()
-
-        # Table-aware: check if chunk contains table markers
-        # If so, we could extend/contract boundary to avoid mid-table split
-        # TODO: Implement smart table boundary detection
-        # _contains_table_marker(chunk_text) would be used here when implemented
 
         # Determine page_start and page_end for this chunk
         chunk_page_start = 0
@@ -261,18 +366,22 @@ def chunk_pages(
         # RBA patterns: "Inflation", "Labour Market", "3.2 GDP Growth", etc.
         section_hint = _detect_rba_section(chunk_text) or _extract_section_hint(chunk_text)
 
-        # Create chunk if non-empty
+        # Phase 6: Quality filtering
+        # Only keep chunks that meet the quality threshold
         if chunk_text:
-            chunks.append(
-                Chunk(
-                    text=chunk_text,
-                    page_start=chunk_page_start,
-                    page_end=chunk_page_end,
-                    chunk_index=chunk_index,
-                    section_hint=section_hint,
+            quality_score = _score_chunk_quality(chunk_text)
+            if quality_score >= quality_threshold:
+                chunks.append(
+                    Chunk(
+                        text=chunk_text,
+                        page_start=chunk_page_start,
+                        page_end=chunk_page_end,
+                        chunk_index=chunk_index,
+                        section_hint=section_hint,
+                    )
                 )
-            )
-            chunk_index += 1
+                chunk_index += 1
+            # Note: Low-quality chunks are silently dropped (score < threshold)
 
         # Calculate next start position with sentence-based overlap
         # This preserves complete thoughts vs word-based splitting

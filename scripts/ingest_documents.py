@@ -190,8 +190,8 @@ def ingest_document(document_id: str, storage: MinioStorage, extractor: TableExt
             cleaner.clean_text(page, repeating_headers, repeating_footers) for page in raw_pages
         ]
 
-        # Create text chunks
-        text_segments = chunk_pages(clean_pages)
+        # Create text chunks with quality threshold from config (Phase 6)
+        text_segments = chunk_pages(clean_pages, quality_threshold=settings.chunk_quality_threshold)
 
         # Extract tables from PDF (inline, same file handle)
         tables_data = []

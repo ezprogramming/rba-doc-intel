@@ -30,6 +30,9 @@ from dataclasses import dataclass
 from typing import Callable, List
 from uuid import UUID
 
+import tiktoken
+
+from app.config import get_settings
 from app.db.models import ChatMessage, ChatSession, Table
 from app.db.session import session_scope
 from app.embeddings.client import EmbeddingClient
@@ -139,6 +142,89 @@ def _compose_analysis(chunks: List[RetrievedChunk]) -> str:
         )
         summaries.append(f"{chunk.title} ({chunk.doc_type}, {page_range})")
     return "Answer grounded in " + "; ".join(summaries)
+
+
+def _validate_context_budget(
+    chunks: List[RetrievedChunk],
+    context_text: str,
+    prompt_template: str,
+    max_tokens: int,
+) -> tuple[List[RetrievedChunk], str]:
+    """Validate and truncate context to fit within token budget.
+
+    Phase 6: Context window management to prevent LLM errors.
+
+    Args:
+        chunks: Retrieved chunks (sorted by relevance)
+        context_text: Formatted context string
+        prompt_template: The full prompt template with context
+        max_tokens: Maximum allowed tokens (from config)
+
+    Returns:
+        (truncated_chunks, truncated_context) if needed, otherwise original
+
+    Strategy:
+    - Count tokens in full prompt using tiktoken (GPT tokenizer as proxy)
+    - If exceeds budget, truncate chunks from lowest-scoring first
+    - Always preserve top-3 chunks for minimum quality
+    - Log warnings when truncation occurs
+
+    Why this matters:
+    - Prevents "context too long" errors from LLM
+    - Ensures consistent behavior regardless of retrieval count
+    - Prioritizes most relevant chunks when budget exceeded
+    """
+    # Initialize tokenizer (use GPT-3.5 as proxy for token counting)
+    try:
+        encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
+    except KeyError:
+        # Fallback to cl100k_base if model not found
+        encoding = tiktoken.get_encoding("cl100k_base")
+
+    # Count tokens in full prompt
+    total_tokens = len(encoding.encode(prompt_template))
+
+    # If within budget, return as-is
+    if total_tokens <= max_tokens:
+        logger.debug(f"Context within budget: {total_tokens}/{max_tokens} tokens")
+        return chunks, context_text
+
+    # Exceeded budget - need to truncate
+    logger.warning(
+        f"Context exceeds budget: {total_tokens}/{max_tokens} tokens. "
+        f"Truncating from {len(chunks)} chunks."
+    )
+
+    # Strategy: Remove chunks from the end (lowest relevance) until we fit
+    # Always keep at least top-3 chunks
+    min_chunks_to_keep = min(3, len(chunks))
+
+    truncated_chunks = chunks[:]
+    while len(truncated_chunks) > min_chunks_to_keep:
+        # Remove last (lowest-scoring) chunk
+        truncated_chunks = truncated_chunks[:-1]
+
+        # Reformat context with remaining chunks
+        truncated_context = _format_context(truncated_chunks)
+        truncated_prompt = prompt_template.replace(context_text, truncated_context)
+
+        # Check if now within budget
+        new_token_count = len(encoding.encode(truncated_prompt))
+        if new_token_count <= max_tokens:
+            logger.info(
+                f"Context truncated to {len(truncated_chunks)} chunks "
+                f"({new_token_count}/{max_tokens} tokens)"
+            )
+            return truncated_chunks, truncated_context
+
+    # If still exceeded even with min chunks, return min chunks and warn
+    truncated_context = _format_context(truncated_chunks)
+    final_tokens = len(encoding.encode(prompt_template.replace(context_text, truncated_context)))
+    logger.warning(
+        f"Context still exceeds budget with minimum {min_chunks_to_keep} chunks "
+        f"({final_tokens}/{max_tokens} tokens). Using minimum chunks anyway."
+    )
+    return truncated_chunks, truncated_context
 
 
 TokenHandler = Callable[[str], None]
@@ -272,6 +358,28 @@ def answer_query(
     # Step 3: Format context and generate answer
     # Pass table_lookup to format tables as markdown in the prompt
     context = _format_context(chunks, table_lookup=table_lookup)
+    user_content = f"""Question: {query}
+
+RBA Document Excerpts:
+{context}
+
+Instructions:
+- Provide a COMPREHENSIVE answer using ONLY the information from the excerpts above
+- Include ALL relevant details: numbers, dates, trends, forecasts
+- Cite document names and page numbers for each point
+- If the excerpts don't contain specific information requested, acknowledge this limitation
+- Synthesize information from multiple excerpts if available
+
+Answer (provide 3-5 sentences with full details):"""
+
+    # Phase 6: Validate context fits within token budget
+    # Truncates low-scoring chunks if needed to prevent LLM errors
+    settings = get_settings()
+    chunks, context = _validate_context_budget(
+        chunks, context, user_content, settings.max_context_tokens
+    )
+
+    # Rebuild user_content with potentially truncated context
     user_content = f"""Question: {query}
 
 RBA Document Excerpts:

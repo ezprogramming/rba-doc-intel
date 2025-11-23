@@ -22,6 +22,7 @@ dependencies = [
     "ghostscript>=0.7",
     "opencv-python-headless>=4.10.0",  # Image processing for chart detection
     "sentence-transformers>=2.3.0",  # Cross-encoder for reranking
+    "tiktoken>=0.5.1",  # Token counting for context window validation
     # Fine-tuning dependencies (local M4 MacBook Pro)
     "torch>=2.1.0",  # PyTorch with MPS support (Metal Performance Shaders)
     "transformers>=4.36.0",  # Hugging Face transformers for model loading

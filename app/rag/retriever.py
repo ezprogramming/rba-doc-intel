@@ -28,9 +28,11 @@ import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 
+import numpy as np
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.db.models import Chunk, Document
 
 logger = logging.getLogger(__name__)
@@ -134,6 +136,7 @@ class RetrievedChunk:
     section_hint: str | None
     table_id: int | None
     score: float
+    embedding: Sequence[float] | None = None  # Optional, for MMR diversity
 
 
 # Default weighting aligns with Pinecone/Anthropic guidance:
@@ -206,6 +209,190 @@ def _compute_recency_score(
     return math.exp(-delta / RECENCY_HALF_LIFE_YEARS)
 
 
+def classify_query(query_text: str) -> str:
+    """Classify query type for adaptive weight tuning.
+
+    Args:
+        query_text: User query string
+
+    Returns:
+        'keyword' | 'semantic' | 'numerical'
+
+    Strategy:
+    - keyword: Short queries (<5 words), no question words
+    - numerical: Contains numbers, data keywords (forecast, rate, etc.)
+    - semantic: Default (analytical questions, concepts)
+
+    Why this helps:
+    - Keyword queries → boost lexical weight (exact match matters)
+    - Numerical queries → boost table chunks
+    - Semantic queries → boost vector similarity
+    """
+    if not query_text:
+        return "semantic"
+
+    words = query_text.split()
+    word_count = len(words)
+    query_lower = query_text.lower()
+
+    # Pattern 1: Keyword queries (short, no question words)
+    question_words = ["what", "when", "where", "why", "how", "which"]
+    has_question = any(q in query_lower for q in question_words)
+
+    if word_count <= 5 and not has_question:
+        return "keyword"
+
+    # Pattern 2: Numerical/data queries
+    has_numbers = bool(re.search(r"\d", query_text))
+    if has_numbers or _is_data_query(query_text):
+        return "numerical"
+
+    # Pattern 3: Default to semantic
+    return "semantic"
+
+
+def reciprocal_rank_fusion(
+    semantic_results: List[tuple], lexical_results: List[tuple], k: int = 60
+) -> List[tuple]:
+    """Combine semantic and lexical results using Reciprocal Rank Fusion.
+
+    Args:
+        semantic_results: List of (chunk_id, score) from vector search
+        lexical_results: List of (chunk_id, score) from full-text search
+        k: RRF constant (default: 60, standard value from literature)
+
+    Returns:
+        List of (chunk_id, rrf_score) sorted by RRF score descending
+
+    RRF formula: score(chunk) = sum(1 / (k + rank_i)) for all rankings
+
+    Why RRF vs weighted combination?
+    - More robust to score scale differences
+    - No manual weight tuning needed
+    - Proven effective in metasearch (TREC benchmarks)
+    - Simpler implementation
+
+    When to use:
+    - When semantic/lexical scores are hard to normalize
+    - When you want "democratic" fusion (no bias to either method)
+    """
+    rrf_scores = {}
+
+    # Add semantic rankings
+    for rank, (chunk_id, _) in enumerate(semantic_results, start=1):
+        rrf_scores[chunk_id] = rrf_scores.get(chunk_id, 0.0) + 1.0 / (k + rank)
+
+    # Add lexical rankings
+    for rank, (chunk_id, _) in enumerate(lexical_results, start=1):
+        rrf_scores[chunk_id] = rrf_scores.get(chunk_id, 0.0) + 1.0 / (k + rank)
+
+    # Sort by RRF score descending
+    return sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
+
+
+def mmr_rerank(
+    chunks: List[RetrievedChunk],
+    query_embedding: Sequence[float],
+    lambda_param: float = 0.5,
+    top_k: Optional[int] = None,
+) -> List[RetrievedChunk]:
+    """Rerank chunks using Maximal Marginal Relevance for diversity.
+
+    Args:
+        chunks: Initial retrieved chunks (sorted by relevance)
+        query_embedding: Query vector for relevance scoring
+        lambda_param: Trade-off between relevance (1.0) and diversity (0.0)
+        top_k: Number of diverse chunks to return (None = return all)
+
+    Returns:
+        Reranked chunks with better diversity
+
+    MMR algorithm:
+    1. Start with most relevant chunk
+    2. For each next pick:
+       - Score = λ * similarity(query, chunk) - (1-λ) * max_similarity(chunk, selected)
+    3. Pick chunk with highest score
+    4. Repeat until top_k selected
+
+    Why MMR matters:
+    - Reduces redundant chunks (same info repeated)
+    - Better coverage of different aspects
+    - User gets broader context vs echo chamber
+
+    Typical λ values:
+    - 0.5: Balanced relevance + diversity (recommended default)
+    - 0.7-0.9: More relevance, less diversity
+    - 0.3-0.5: More diversity, may sacrifice some relevance
+    """
+    if not chunks or top_k == 0:
+        return []
+
+    if top_k is None:
+        top_k = len(chunks)
+
+    # Convert query to numpy for fast cosine similarity
+    query_vec = np.array(query_embedding, dtype=np.float32)
+    query_vec = query_vec / (np.linalg.norm(query_vec) + 1e-10)
+
+    # Extract embeddings from chunks
+    chunk_embeddings = []
+    for chunk in chunks:
+        if chunk.embedding is not None:
+            emb = np.array(chunk.embedding, dtype=np.float32)
+            emb = emb / (np.linalg.norm(emb) + 1e-10)
+            chunk_embeddings.append(emb)
+        else:
+            # Fallback: zero vector if embedding missing
+            chunk_embeddings.append(np.zeros_like(query_vec))
+
+    chunk_embeddings = np.array(chunk_embeddings)
+
+    # Precompute relevance scores (similarity to query)
+    relevance_scores = np.dot(chunk_embeddings, query_vec)
+
+    # MMR selection
+    selected_indices = []
+    remaining_indices = list(range(len(chunks)))
+
+    # Start with most relevant chunk
+    best_idx = int(np.argmax(relevance_scores))
+    selected_indices.append(best_idx)
+    remaining_indices.remove(best_idx)
+
+    # Iteratively select diverse chunks
+    while len(selected_indices) < top_k and remaining_indices:
+        best_score = -float("inf")
+        best_idx = None
+
+        for idx in remaining_indices:
+            # Relevance component
+            relevance = relevance_scores[idx]
+
+            # Diversity component: max similarity to already selected chunks
+            if selected_indices:
+                selected_embeddings = chunk_embeddings[selected_indices]
+                similarities = np.dot(selected_embeddings, chunk_embeddings[idx])
+                max_similarity = np.max(similarities)
+            else:
+                max_similarity = 0.0
+
+            # MMR score
+            mmr_score = lambda_param * relevance - (1 - lambda_param) * max_similarity
+
+            if mmr_score > best_score:
+                best_score = mmr_score
+                best_idx = idx
+
+        if best_idx is not None:
+            selected_indices.append(best_idx)
+            remaining_indices.remove(best_idx)
+        else:
+            break
+
+    # Return chunks in MMR-selected order
+    return [chunks[i] for i in selected_indices]
+
+
 def retrieve_similar_chunks(
     session: Session,
     query_text: str,
@@ -262,6 +449,26 @@ def retrieve_similar_chunks(
     - Complex analytical queries
     - When bi-encoder retrieval quality is insufficient
     """
+
+    # Phase 6: Query classification for adaptive weights
+    # Classify query type and adapt weights accordingly
+    settings = get_settings()
+    query_type = classify_query(query_text)
+
+    # Adaptive weight tuning based on query type
+    if query_type == "keyword":
+        # Keyword queries: boost lexical (exact match matters)
+        semantic_weight = semantic_weight * 0.6
+        lexical_weight = lexical_weight * 1.4
+    elif query_type == "numerical":
+        # Numerical queries: balanced, rely on table boost later
+        pass  # Keep weights as-is
+    # else: semantic queries use default weights
+
+    logger.debug(
+        f"Query classified as '{query_type}' "
+        f"(weights: semantic={semantic_weight:.2f}, lexical={lexical_weight:.2f})"
+    )
 
     # Determine how many candidates to retrieve
     # If reranking: retrieve limit * rerank_multiplier (e.g., 5 * 10 = 50)
@@ -401,42 +608,116 @@ def retrieve_similar_chunks(
     # Check if query suggests user wants data/forecasts
     is_data_focused = _is_data_query(query_text)
 
+    # Phase 6: Choose scoring strategy (RRF vs weighted combination)
     results: List[RetrievedChunk] = []
-    for item in items:
-        semantic_score = item["semantic"] / semantic_max if semantic_max > 0 else 0.0
-        lexical_score = item["lexical"] / lexical_max if lexical_max > 0 else 0.0
-        final_score = 0.0
-        if semantic_weight > 0:
-            final_score += semantic_weight * semantic_score
-        if lexical_weight > 0:
-            final_score += lexical_weight * lexical_score
-        if recency_bias:
-            recency_score = _compute_recency_score(item["publication_date"], target_year)
-            final_score += RECENCY_WEIGHT * recency_score
-        # Boost table chunks for data-focused queries
-        if is_data_focused and item.get("table_id") is not None:
-            final_score += TABLE_BOOST_WEIGHT
 
-        results.append(
-            RetrievedChunk(
-                chunk_id=item["chunk_id"],
-                document_id=item["document_id"],
-                text=item["text"],
-                doc_type=item["doc_type"],
-                title=item["title"],
-                publication_date=item["publication_date"].isoformat()
-                if item["publication_date"]
-                else None,
-                page_start=item["page_start"],
-                page_end=item["page_end"],
-                section_hint=item["section_hint"],
-                table_id=item.get("table_id"),
-                score=final_score,
+    if settings.use_rrf:
+        # Option A: Reciprocal Rank Fusion (RRF)
+        # Build ranked lists for RRF
+        semantic_ranked = [(item["chunk_id"], item["semantic"]) for item in items]
+        semantic_ranked.sort(key=lambda x: x[1], reverse=True)
+
+        lexical_ranked = [(item["chunk_id"], item["lexical"]) for item in items]
+        lexical_ranked.sort(key=lambda x: x[1], reverse=True)
+
+        # Apply RRF fusion
+        rrf_results = reciprocal_rank_fusion(semantic_ranked, lexical_ranked)
+
+        # Build results with RRF scores
+        chunk_id_to_item = {item["chunk_id"]: item for item in items}
+        for chunk_id, rrf_score in rrf_results:
+            item = chunk_id_to_item.get(chunk_id)
+            if not item:
+                continue
+
+            final_score = rrf_score
+
+            # Add recency boost
+            if recency_bias:
+                recency_score = _compute_recency_score(item["publication_date"], target_year)
+                final_score += settings.recency_weight * recency_score
+
+            # Boost table chunks for data-focused queries
+            if is_data_focused and item.get("table_id") is not None:
+                final_score += settings.table_boost_data_queries
+
+            results.append(
+                RetrievedChunk(
+                    chunk_id=item["chunk_id"],
+                    document_id=item["document_id"],
+                    text=item["text"],
+                    doc_type=item["doc_type"],
+                    title=item["title"],
+                    publication_date=item["publication_date"].isoformat()
+                    if item["publication_date"]
+                    else None,
+                    page_start=item["page_start"],
+                    page_end=item["page_end"],
+                    section_hint=item["section_hint"],
+                    table_id=item.get("table_id"),
+                    score=final_score,
+                )
             )
-        )
+        logger.debug(f"Using RRF fusion for {len(results)} results")
+    else:
+        # Option B: Weighted combination (default)
+        for item in items:
+            semantic_score = item["semantic"] / semantic_max if semantic_max > 0 else 0.0
+            lexical_score = item["lexical"] / lexical_max if lexical_max > 0 else 0.0
+            final_score = 0.0
+            if semantic_weight > 0:
+                final_score += semantic_weight * semantic_score
+            if lexical_weight > 0:
+                final_score += lexical_weight * lexical_score
+            if recency_bias:
+                recency_score = _compute_recency_score(item["publication_date"], target_year)
+                final_score += RECENCY_WEIGHT * recency_score
+            # Boost table chunks for data-focused queries
+            if is_data_focused and item.get("table_id") is not None:
+                final_score += TABLE_BOOST_WEIGHT
 
-    # Step 3: Sort by hybrid score (tie-breaking by id) and optionally rerank
+            results.append(
+                RetrievedChunk(
+                    chunk_id=item["chunk_id"],
+                    document_id=item["document_id"],
+                    text=item["text"],
+                    doc_type=item["doc_type"],
+                    title=item["title"],
+                    publication_date=item["publication_date"].isoformat()
+                    if item["publication_date"]
+                    else None,
+                    page_start=item["page_start"],
+                    page_end=item["page_end"],
+                    section_hint=item["section_hint"],
+                    table_id=item.get("table_id"),
+                    score=final_score,
+                )
+            )
+
+    # Step 3: Sort by hybrid score (tie-breaking by id)
     results.sort(key=lambda chunk: (-chunk.score, chunk.chunk_id))
+
+    # Phase 6: Apply MMR for diversity (if enabled and not using reranking)
+    # Why skip MMR when reranking? Cross-encoder already provides diversity through precision
+    if settings.use_mmr and not rerank and len(results) > limit:
+        logger.debug(
+            f"Applying MMR diversity (λ={settings.mmr_lambda}) to {len(results)} candidates"
+        )
+        # Need embeddings for MMR - fetch them
+        chunk_ids = [r.chunk_id for r in results]
+        embedding_stmt = select(Chunk.id, Chunk.embedding).where(Chunk.id.in_(chunk_ids))
+        embedding_rows = session.execute(embedding_stmt).all()
+        embedding_map = {row.id: row.embedding for row in embedding_rows}
+
+        # Attach embeddings to results
+        for result in results:
+            result.embedding = embedding_map.get(result.chunk_id)
+
+        # Apply MMR reranking
+        results = mmr_rerank(
+            results, query_embedding, lambda_param=settings.mmr_lambda, top_k=limit
+        )
+        logger.debug(f"MMR reduced results to top-{limit} diverse chunks")
 
     # If reranking is disabled, return top-k by hybrid score
     if not rerank:
