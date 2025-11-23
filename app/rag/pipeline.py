@@ -35,7 +35,7 @@ from app.db.session import session_scope
 from app.embeddings.client import EmbeddingClient
 from app.rag.hooks import hooks
 from app.rag.llm_client import LLMClient
-from app.rag.retriever import RetrievedChunk, retrieve_similar_chunks
+from app.rag.retriever import RetrievedChunk, format_table_as_markdown, retrieve_similar_chunks
 from app.rag.safety import check_answer_safety, check_query_safety
 
 logger = logging.getLogger(__name__)
@@ -53,7 +53,8 @@ You are a financial analyst. Answer questions using ONLY the RBA document excerp
 
 STRICT RULES:
 1. Use ONLY the provided context - do NOT add outside knowledge
-2. If context lacks information, say: "Based on the provided RBA documents, I cannot find specific information about [topic]."
+2. If context lacks information, say: "Based on the provided RBA documents,
+   I cannot find specific information about [topic]."
 3. Always cite document name and page numbers
 4. Include numbers and dates from the context
 5. Stay focused on answering the specific question asked
@@ -64,7 +65,8 @@ Question: "What is the inflation forecast for 2024?"
 Context: "[SMP Feb 2024] Inflation is expected to decline to 3.2% by December 2024 (page 12)"
 
 GOOD ANSWER:
-"According to the Statement on Monetary Policy - February 2024 (page 12), inflation is forecast to decline to 3.2% by December 2024."
+"According to the Statement on Monetary Policy - February 2024 (page 12),
+inflation is forecast to decline to 3.2% by December 2024."
 
 BAD ANSWER (uses outside knowledge):
 "Inflation is affected by global supply chains and consumer demand..."
@@ -73,11 +75,55 @@ Remember: Answer the question using ONLY what's in the provided context.
 """
 
 
-def _format_context(chunks: List[RetrievedChunk]) -> str:
+def _format_context(
+    chunks: List[RetrievedChunk], table_lookup: dict[int, dict] | None = None
+) -> str:
+    """Format retrieved chunks as context for LLM prompt.
+
+    For table chunks (chunks with table_id):
+    - Uses markdown table format for better LLM reasoning
+    - Includes caption and page number
+    - Falls back to flattened text if markdown generation fails
+
+    For regular text chunks:
+    - Uses existing format (document header + text)
+
+    Args:
+        chunks: List of retrieved chunks
+        table_lookup: Dict mapping table_id -> table metadata/structured_data
+                     (populated during retrieval)
+
+    Returns:
+        Formatted context string for LLM prompt
+    """
     formatted = []
+    table_lookup = table_lookup or {}
+
     for chunk in chunks:
         header = f"[{chunk.doc_type}] {chunk.title} (pages {chunk.page_start}-{chunk.page_end})"
-        formatted.append(f"{header}\n{chunk.text}")
+
+        # Check if this chunk is from a table
+        if chunk.table_id and chunk.table_id in table_lookup:
+            table_data = table_lookup[chunk.table_id]
+            try:
+                # Format table as markdown for better LLM understanding
+                markdown_table = format_table_as_markdown(
+                    structured_data=table_data["structured_data"],
+                    caption=table_data.get("caption"),
+                )
+                # Add document header + markdown table
+                formatted.append(f"{header}\n{markdown_table}")
+            except Exception as e:
+                # Graceful fallback: use flattened text if markdown generation fails
+                logger.warning(
+                    f"Failed to format table {chunk.table_id} as markdown: {e}. "
+                    f"Falling back to flattened text."
+                )
+                formatted.append(f"{header}\n{chunk.text}")
+        else:
+            # Regular text chunk: use existing format
+            formatted.append(f"{header}\n{chunk.text}")
+
     return "\n\n".join(formatted)
 
 
@@ -224,7 +270,8 @@ def answer_query(
         session.add(ChatMessage(session_id=session_id_value, role="user", content=query))
 
     # Step 3: Format context and generate answer
-    context = _format_context(chunks)
+    # Pass table_lookup to format tables as markdown in the prompt
+    context = _format_context(chunks, table_lookup=table_lookup)
     user_content = f"""Question: {query}
 
 RBA Document Excerpts:

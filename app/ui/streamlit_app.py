@@ -32,6 +32,7 @@ from app.db.models import ChatMessage, Feedback
 from app.db.session import session_scope
 from app.rag.hooks import hooks
 from app.rag.pipeline import answer_query
+from app.rag.retriever import format_table_as_markdown
 
 st.set_page_config(page_title="RBA Document Intelligence", layout="wide")
 st.title("RBA Document Intelligence Platform")
@@ -174,7 +175,35 @@ def render_history() -> None:
                 )
                 section = f" · {evidence['section_hint']}" if evidence.get("section_hint") else ""
                 st.write(f"- {evidence['doc_type']} · {evidence['title']}{section} · {page_label}")
-                st.caption(evidence["snippet"])
+
+                # Check if this evidence contains table data
+                table_data = evidence.get("table")
+                if table_data and table_data.get("structured_data"):
+                    # Render table visually using markdown or dataframe
+                    try:
+                        # Option 1: Render as markdown table (more compact)
+                        markdown_table = format_table_as_markdown(
+                            structured_data=table_data["structured_data"],
+                            caption=table_data.get("caption"),
+                        )
+                        st.markdown(markdown_table)
+
+                        # Option 2 (alternative): Render as interactive dataframe
+                        # df = pd.DataFrame(table_data["structured_data"])
+                        # st.dataframe(df, use_container_width=True)
+
+                        # Show table metadata
+                        if table_data.get("caption"):
+                            st.caption(f"Caption: {table_data['caption']}")
+                        if table_data.get("accuracy"):
+                            st.caption(f"Extraction confidence: {table_data['accuracy']}%")
+                    except Exception as e:
+                        # Fallback to text snippet if table rendering fails
+                        st.caption(f"(Table rendering failed: {e})")
+                        st.caption(evidence["snippet"])
+                else:
+                    # Regular text evidence: show snippet
+                    st.caption(evidence["snippet"])
 
         # Divider between messages
         st.divider()

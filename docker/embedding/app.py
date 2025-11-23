@@ -16,12 +16,11 @@ import torch
 import torch.nn.functional as F
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoModel, AutoTokenizer
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -33,6 +32,7 @@ PREFERRED_DEVICE = os.environ.get("EMBEDDING_DEVICE", "").strip().lower()
 
 def get_device() -> str:
     """Choose best device with optional override via EMBEDDING_DEVICE."""
+
     def _warn_fallback(target: str) -> None:
         logger.warning(f"Requested device '{target}' not available; falling back to auto-detect")
 
@@ -105,12 +105,7 @@ def mean_pooling(model_output, attention_mask):
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {
-        "status": "ok",
-        "model": MODEL_ID,
-        "device": DEVICE,
-        "batch_size": BATCH_SIZE
-    }
+    return {"status": "ok", "model": MODEL_ID, "device": DEVICE, "batch_size": BATCH_SIZE}
 
 
 @app.post("/embeddings")
@@ -127,10 +122,7 @@ def embeddings(payload: EmbeddingRequest) -> dict[str, List[EmbeddingResponse]]:
         HTTPException: If input is empty or embedding fails
     """
     if not payload.input:
-        raise HTTPException(
-            status_code=400,
-            detail="Input must contain at least one string"
-        )
+        raise HTTPException(status_code=400, detail="Input must contain at least one string")
 
     try:
         # Tokenize with proper padding and truncation
@@ -138,10 +130,10 @@ def embeddings(payload: EmbeddingRequest) -> dict[str, List[EmbeddingResponse]]:
         # truncation=True = truncate sequences longer than max_length
         encoded_input = tokenizer(
             payload.input,
-            padding='longest',  # Dynamic padding to longest in batch
+            padding="longest",  # Dynamic padding to longest in batch
             truncation=True,
             max_length=MAX_SEQ_LENGTH,
-            return_tensors='pt'
+            return_tensors="pt",
         ).to(DEVICE)
 
         # Generate embeddings without gradient computation (faster)
@@ -149,7 +141,7 @@ def embeddings(payload: EmbeddingRequest) -> dict[str, List[EmbeddingResponse]]:
             model_output = model(**encoded_input)
 
         # Apply mean pooling
-        embeddings = mean_pooling(model_output, encoded_input['attention_mask'])
+        embeddings = mean_pooling(model_output, encoded_input["attention_mask"])
 
         # Normalize embeddings (L2 normalization for cosine similarity)
         embeddings = F.normalize(embeddings, p=2, dim=1)
@@ -157,17 +149,11 @@ def embeddings(payload: EmbeddingRequest) -> dict[str, List[EmbeddingResponse]]:
         # Convert to list
         vectors = embeddings.cpu().numpy()
 
-        data = [
-            EmbeddingResponse(embedding=vec.tolist(), index=i)
-            for i, vec in enumerate(vectors)
-        ]
+        data = [EmbeddingResponse(embedding=vec.tolist(), index=i) for i, vec in enumerate(vectors)]
 
         logger.debug(f"Generated {len(data)} embeddings")
         return {"data": data}
 
     except Exception as e:
         logger.error(f"Embedding generation failed: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to generate embeddings: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to generate embeddings: {str(e)}")

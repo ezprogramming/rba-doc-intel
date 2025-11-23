@@ -3,7 +3,6 @@
 from types import SimpleNamespace
 
 import pytest
-
 from app.db.models import Feedback
 from app.ui.streamlit_app import store_feedback
 
