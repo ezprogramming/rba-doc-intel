@@ -241,6 +241,38 @@ class TableExtractor:
         df.columns = cleaned_headers
         return df[header_row_idx + 1 :].reset_index(drop=True)
 
+    def _clean_dataframe(self, df):
+        """Clean DataFrame using simple pandas operations.
+
+        Handles:
+        - NaN/None → empty string
+        - Whitespace normalization (strip, collapse multiple spaces)
+        - Null bytes and replacement characters
+
+        This is SIMPLER and more reliable than custom cell-by-cell cleaning.
+
+        Args:
+            df: Raw pandas DataFrame from Camelot
+
+        Returns:
+            Cleaned DataFrame
+        """
+        import re
+
+        # 1. Fill NaN/None with empty string
+        df = df.fillna("")
+
+        # 2. Convert everything to string and strip whitespace
+        df = df.applymap(lambda x: str(x).strip() if x else "")
+
+        # 3. Collapse multiple whitespaces to single space
+        df = df.applymap(lambda x: re.sub(r"\s+", " ", x) if x else "")
+
+        # 4. Remove null bytes and replacement characters (PDF artifacts)
+        df = df.applymap(lambda x: x.replace("\x00", "").replace("\ufffd", "") if x else "")
+
+        return df
+
     def _has_numeric_content(self, rows: List[Dict[str, Any]], threshold: float = 0.3) -> bool:
         """Check if table contains numerical data (not just text layout).
 
@@ -450,8 +482,11 @@ class TableExtractor:
                     )
                     continue
 
+                # Clean the DataFrame first (handles nulls, whitespace, artifacts)
+                df_cleaned = self._clean_dataframe(table.df)
+
                 # Apply header detection to get meaningful column names
-                df_with_headers = self._detect_headers(table.df)
+                df_with_headers = self._detect_headers(df_cleaned)
                 rows = df_with_headers.to_dict("records")
 
                 # Filter out text-only tables (false positives)

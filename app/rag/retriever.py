@@ -36,6 +36,91 @@ from app.db.models import Chunk, Document
 logger = logging.getLogger(__name__)
 
 
+def format_table_as_markdown(
+    structured_data: list[dict],
+    caption: str | None = None,
+    max_col_width: int = 50,
+) -> str:
+    """Convert structured table data to markdown format for LLM consumption.
+
+    Args:
+        structured_data: List of row dictionaries (from tables.structured_data JSONB)
+        caption: Optional table caption/title
+        max_col_width: Maximum width for column values (truncate longer values)
+
+    Returns:
+        Markdown-formatted table string
+
+    Example input:
+        structured_data = [
+            {"Year": "2024", "GDP": "2.1%", "Inflation": "3.5%"},
+            {"Year": "2025", "GDP": "2.5%", "Inflation": "2.8%"}
+        ]
+        caption = "Economic Forecasts"
+
+    Example output:
+        Table: Economic Forecasts
+
+        | Year | GDP  | Inflation |
+        |------|------|-----------|
+        | 2024 | 2.1% | 3.5%      |
+        | 2025 | 2.5% | 2.8%      |
+
+    Edge cases handled:
+    - Empty structured_data → returns caption only
+    - Missing headers → uses keys from first row
+    - Inconsistent columns → fills missing with empty strings
+    - Long values → truncates with ellipsis
+    - Empty cells → shows as empty string
+    """
+    if not structured_data:
+        return f"Table: {caption}\n\n(No data available)" if caption else "(No data available)"
+
+    # Extract headers from first row
+    # Why first row? Assumes all rows have same schema (standard for Camelot extraction)
+    headers = list(structured_data[0].keys())
+
+    if not headers:
+        return f"Table: {caption}\n\n(No columns found)" if caption else "(No columns found)"
+
+    def truncate(value: str, max_width: int = max_col_width) -> str:
+        """Truncate long values with ellipsis."""
+        if len(value) > max_width:
+            return value[: max_width - 3] + "..."
+        return value
+
+    def clean_cell(value: any) -> str:
+        """Convert cell value to clean string."""
+        if value is None or value == "":
+            return ""
+        return truncate(str(value).strip())
+
+    # Build markdown table
+    lines = []
+
+    # Add caption if provided
+    if caption:
+        lines.append(f"Table: {caption}\n")
+
+    # Add header row
+    header_row = "| " + " | ".join(truncate(str(h)) for h in headers) + " |"
+    lines.append(header_row)
+
+    # Add separator row
+    separator = "| " + " | ".join("-" * min(len(str(h)), max_col_width) for h in headers) + " |"
+    lines.append(separator)
+
+    # Add data rows
+    for row in structured_data:
+        # Handle missing columns by filling with empty string
+        # Why? Tables extracted by Camelot might have inconsistent columns
+        row_values = [clean_cell(row.get(header, "")) for header in headers]
+        data_row = "| " + " | ".join(row_values) + " |"
+        lines.append(data_row)
+
+    return "\n".join(lines)
+
+
 @dataclass
 class RetrievedChunk:
     chunk_id: int
@@ -62,6 +147,34 @@ RECENCY_HALF_LIFE_YEARS = 1.5  # sharper decay to favour most recent content
 
 YEAR_PATTERN = re.compile(r"(?:19|20)\d{2}")
 
+# Keywords that suggest user wants structured data/forecasts
+DATA_QUERY_KEYWORDS = {
+    "forecast",
+    "projection",
+    "outlook",
+    "trend",
+    "rate",
+    "percent",
+    "%",
+    "growth",
+    "decline",
+    "increase",
+    "decrease",
+    "target",
+    "data",
+    "numbers",
+    "quarterly",
+    "annual",
+    "year",
+    "month",
+    "when",
+    "how much",
+    "what is the",
+}
+
+# Boost table chunks when query suggests data/numbers needed
+TABLE_BOOST_WEIGHT = 0.3
+
 
 def _extract_target_year(query_text: str) -> int | None:
     """Return the most recent year mentioned in the query, if any."""
@@ -69,6 +182,14 @@ def _extract_target_year(query_text: str) -> int | None:
         return None
     years = [int(match) for match in YEAR_PATTERN.findall(query_text)]
     return max(years) if years else None
+
+
+def _is_data_query(query_text: str) -> bool:
+    """Check if query suggests user wants structured data/forecasts."""
+    if not query_text:
+        return False
+    query_lower = query_text.lower()
+    return any(keyword in query_lower for keyword in DATA_QUERY_KEYWORDS)
 
 
 def _compute_recency_score(
@@ -277,6 +398,9 @@ def retrieve_similar_chunks(
             )
             items = filtered
 
+    # Check if query suggests user wants data/forecasts
+    is_data_focused = _is_data_query(query_text)
+
     results: List[RetrievedChunk] = []
     for item in items:
         semantic_score = item["semantic"] / semantic_max if semantic_max > 0 else 0.0
@@ -289,6 +413,9 @@ def retrieve_similar_chunks(
         if recency_bias:
             recency_score = _compute_recency_score(item["publication_date"], target_year)
             final_score += RECENCY_WEIGHT * recency_score
+        # Boost table chunks for data-focused queries
+        if is_data_focused and item.get("table_id") is not None:
+            final_score += TABLE_BOOST_WEIGHT
 
         results.append(
             RetrievedChunk(

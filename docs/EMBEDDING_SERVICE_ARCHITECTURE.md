@@ -1,8 +1,21 @@
 # Embedding Service Architecture
 
+## Quick Start
+
+**Problem**: Need fast, reliable embedding generation for 2,500+ variable-length text chunks.
+
+**Solution**: Use `transformers` library directly with proper batching → **2.5x faster** than `sentence-transformers`.
+
+**Result**: 0.28 chunks/sec on CPU (2.6 hours for full corpus) vs 0.11 chunks/sec with sentence-transformers (6.5 hours).
+
+---
+
 ## Overview
 
-The embedding service converts text chunks into 768-dimensional vectors for semantic search. This document explains the architecture, why we use `transformers` directly instead of `sentence-transformers`, and the performance implications.
+The embedding service converts text chunks into 768-dimensional vectors for semantic search. This document explains:
+- Why we use `transformers` directly instead of `sentence-transformers`
+- How the embedding pipeline works (tokenization → model → pooling → normalization)
+- Performance implications and scaling options
 
 ---
 
