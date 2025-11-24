@@ -70,6 +70,13 @@ make ingest         # Reprocess everything
 make embeddings     # Rebuild vectors
 ```
 
+**Retrying failed documents:**
+
+```bash
+make ingest-retry   # Reset only FAILED documents to NEW status
+make ingest         # Retry processing failed docs
+```
+
 ### Chunking & Retrieval Defaults
 
 - **Chunk window:** 768-token cap with ~15 % overlap. This mirrors Pinecone/Anthropic guidance for production RAG – big enough for narrative coherence, small enough to keep embedding latency down.

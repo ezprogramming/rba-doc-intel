@@ -55,26 +55,13 @@ SYSTEM_PROMPT = """
 You are a financial analyst. Answer questions using ONLY the RBA document excerpts provided.
 
 STRICT RULES:
-1. Use ONLY the provided context - do NOT add outside knowledge
-2. If context lacks information, say: "Based on the provided RBA documents,
-   I cannot find specific information about [topic]."
-3. Always cite document name and page numbers
-4. Include numbers and dates from the context
-5. Stay focused on answering the specific question asked
+1. Use ONLY the provided context - do NOT add outside knowledge or extrapolate
+2. If context lacks specific information requested, state clearly: "Based on the provided RBA documents, I cannot find specific information about [topic]."
+3. Do NOT make inferences beyond what is explicitly stated
+4. Always cite document name and page numbers
+5. If asked about city-specific or detailed data not in context, acknowledge the limitation
 
-EXAMPLE OF CORRECT ANSWER FORMAT:
-
-Question: "What is the inflation forecast for 2024?"
-Context: "[SMP Feb 2024] Inflation is expected to decline to 3.2% by December 2024 (page 12)"
-
-GOOD ANSWER:
-"According to the Statement on Monetary Policy - February 2024 (page 12),
-inflation is forecast to decline to 3.2% by December 2024."
-
-BAD ANSWER (uses outside knowledge):
-"Inflation is affected by global supply chains and consumer demand..."
-
-Remember: Answer the question using ONLY what's in the provided context.
+Answer the question using ONLY what's in the provided context.
 """
 
 
@@ -364,13 +351,16 @@ RBA Document Excerpts:
 {context}
 
 Instructions:
-- Provide a COMPREHENSIVE answer using ONLY the information from the excerpts above
-- Include ALL relevant details: numbers, dates, trends, forecasts
+- Provide a COMPREHENSIVE, DETAILED answer using ONLY the information from the excerpts above
+- Include ALL relevant details: numbers, dates, trends, forecasts, and underlying factors
+- Explain the reasoning and context behind the data when available
+- For numerical queries: provide specific figures, time periods, and comparisons
 - Cite document names and page numbers for each point
+- Synthesize information from multiple excerpts to provide complete context
+- Structure your answer with clear explanations - aim for thoroughness over brevity
 - If the excerpts don't contain specific information requested, acknowledge this limitation
-- Synthesize information from multiple excerpts if available
 
-Answer (provide 3-5 sentences with full details):"""
+Answer (provide a detailed response with full context and reasoning):"""
 
     # Phase 6: Validate context fits within token budget
     # Truncates low-scoring chunks if needed to prevent LLM errors
@@ -386,13 +376,16 @@ RBA Document Excerpts:
 {context}
 
 Instructions:
-- Provide a COMPREHENSIVE answer using ONLY the information from the excerpts above
-- Include ALL relevant details: numbers, dates, trends, forecasts
+- Provide a COMPREHENSIVE, DETAILED answer using ONLY the information from the excerpts above
+- Include ALL relevant details: numbers, dates, trends, forecasts, and underlying factors
+- Explain the reasoning and context behind the data when available
+- For numerical queries: provide specific figures, time periods, and comparisons
 - Cite document names and page numbers for each point
+- Synthesize information from multiple excerpts to provide complete context
+- Structure your answer with clear explanations - aim for thoroughness over brevity
 - If the excerpts don't contain specific information requested, acknowledge this limitation
-- Synthesize information from multiple excerpts if available
 
-Answer (provide 3-5 sentences with full details):"""
+Answer (provide a detailed response with full context and reasoning):"""
     messages = [{"role": "user", "content": user_content}]
 
     # Step 4: Generate answer using LLM

@@ -263,13 +263,13 @@ class TableExtractor:
         df = df.fillna("")
 
         # 2. Convert everything to string and strip whitespace
-        df = df.applymap(lambda x: str(x).strip() if x else "")
+        df = df.map(lambda x: str(x).strip() if x else "")
 
         # 3. Collapse multiple whitespaces to single space
-        df = df.applymap(lambda x: re.sub(r"\s+", " ", x) if x else "")
+        df = df.map(lambda x: re.sub(r"\s+", " ", x) if x else "")
 
         # 4. Remove null bytes and replacement characters (PDF artifacts)
-        df = df.applymap(lambda x: x.replace("\x00", "").replace("\ufffd", "") if x else "")
+        df = df.map(lambda x: x.replace("\x00", "").replace("\ufffd", "") if x else "")
 
         return df
 

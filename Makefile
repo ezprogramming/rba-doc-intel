@@ -118,6 +118,10 @@ ingest-reset: ## Reset all documents to NEW status
 	@echo "Resetting document status..."
 	$(UV_RUN) python scripts/ingest_documents.py --reset
 
+ingest-retry: ## Retry all FAILED documents
+	@echo "Retrying failed documents..."
+	$(UV_RUN) python scripts/ingest_documents.py --retry-failed
+
 embeddings: ## Generate embeddings for chunks
 	@echo "Building embeddings..."
 	$(UV_RUN) scripts/build_embeddings.py $(ARGS) $(EXTRA_ARGS)

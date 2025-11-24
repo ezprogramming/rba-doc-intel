@@ -84,6 +84,39 @@ def reset_all_to_new() -> int:
         return count
 
 
+def retry_failed_documents() -> int:
+    """Reset FAILED documents back to NEW to retry processing.
+
+    Also clears any partial data to ensure clean reprocessing.
+    """
+    with session_scope() as session:
+        # Get all FAILED document IDs
+        stmt = select(Document.id).where(Document.status == DocumentStatus.FAILED.value)
+        doc_ids = [str(row[0]) for row in session.execute(stmt)]
+
+        if not doc_ids:
+            LOGGER.info("No FAILED documents to retry")
+            return 0
+
+        # Clear any partial data (idempotent)
+        for doc_id in doc_ids:
+            session.query(Page).filter(Page.document_id == doc_id).delete()
+            session.query(ChunkModel).filter(ChunkModel.document_id == doc_id).delete()
+            session.query(Table).filter(Table.document_id == doc_id).delete()
+
+        # Reset status to NEW
+        stmt = (
+            update(Document)
+            .where(Document.status == DocumentStatus.FAILED.value)
+            .values(status=DocumentStatus.NEW.value)
+        )
+        result = session.execute(stmt)
+        count = result.rowcount
+
+        LOGGER.info("Reset %d FAILED documents to NEW status for retry", count)
+        return count
+
+
 def _fetch_pending_documents(limit: int) -> List[str]:
     """Fetch document IDs that need processing."""
     with session_scope() as session:
@@ -105,50 +138,116 @@ def _download_pdf(storage: MinioStorage, s3_key: str) -> Path:
 
 
 def _table_to_text(table_data: dict) -> str:
-    """Convert table to semantic format for RAG (simplified).
+    """Convert table to semantic format for RAG with improved retrieval keywords.
+
+    Generates retrieval-friendly text by:
+    1. Repeating caption keywords for better embedding match
+    2. Extracting semantic concepts from caption (e.g., "housing", "price", "inflation")
+    3. Including table metadata context
+    4. Handling malformed table structures gracefully
 
     Example output:
-        Economic Forecasts (Table 3.1)
-        GDP — 2024: 2.1%, 2025: 2.5%
-        Inflation — 2024: 3.5%, 2025: 2.8%
+        Table about housing prices and interest rates (Page 8)
+        This table contains data on: housing, prices, interest rates, lending
+        Variable interest rates on new housing
+        Owner-occupier: 6.18%, Investor: 6.49%
+        ...
     """
     rows = table_data.get("data") or []
     if not rows:
         return ""
 
     lines = []
-
-    # Add caption if available (handle None values)
     caption = (table_data.get("caption") or "").strip()
     page_num = table_data.get("page_number", "")
+
+    # Phase 1: Add semantic header with keywords for retrieval
     if caption:
-        lines.append(f"{caption} (Page {page_num})")
-    elif page_num:
+        # Extract semantic keywords from caption (common financial/economic terms)
+        keywords = []
+        caption_lower = caption.lower()
+        semantic_terms = [
+            "housing", "house", "price", "inflation", "interest", "rate", "credit",
+            "loan", "mortgage", "gdp", "growth", "forecast", "employment", "wage",
+            "debt", "income", "spending", "saving", "investment", "bank", "reserve",
+            "cash", "financial", "economic", "market", "bond", "yield", "currency",
+            "exchange", "dollar", "trade", "export", "import", "balance", "deficit"
+        ]
+        for term in semantic_terms:
+            if term in caption_lower:
+                keywords.append(term)
+
+        # Add descriptive header
+        if keywords:
+            lines.append(f"Table about {', '.join(keywords[:5])} (Page {page_num})")
+            lines.append(f"This table contains data on: {', '.join(keywords)}")
+        else:
+            lines.append(f"Financial/Economic Table (Page {page_num})")
+
+        # Add original caption
+        lines.append(caption)
+    else:
         lines.append(f"Table Data (Page {page_num})")
 
-    # Format rows: Metric — col1: val1, col2: val2, ...
-    headers = list(rows[0].keys())
-    metric_col = headers[0] if headers else None
-    value_cols = headers[1:] if len(headers) > 1 else []
+    # Phase 2: Format table rows (robust to malformed structures)
+    headers = list(rows[0].keys()) if rows else []
 
-    for row in rows[:50]:  # Limit to 50 rows
-        metric = str(row.get(metric_col, "")).strip()
-        if not metric:
+    # Try to intelligently identify metric column vs value columns
+    # Heuristic: Metric column likely has longer text, value columns have numbers
+    metric_col = None
+    value_cols = []
+
+    for header in headers:
+        # Convert header to string for length check (headers can be int like 2024)
+        header_str = str(header)
+
+        # Sample first few rows to check if column contains mostly text vs numbers
+        sample_vals = [str(rows[i].get(header, "")) for i in range(min(3, len(rows)))]
+        # Check if values look like numbers (contain digits, %, $)
+        is_numeric = any(c.isdigit() or c in "%$" for val in sample_vals for c in val)
+
+        if not is_numeric and len(header_str) > 3:  # Likely a row label column
+            metric_col = header
+        elif is_numeric or len(header_str) <= 3:  # Likely a data column
+            value_cols.append(header)
+
+    # Fallback: if no clear metric column, use first column
+    if not metric_col and headers:
+        metric_col = headers[0]
+        value_cols = headers[1:]
+
+    # Format rows
+    for row in rows[:20]:  # Limit to 20 rows to stay within embedding window
+        if not metric_col:
+            # Malformed table - just dump all key-value pairs
+            pairs = [f"{k}: {v}" for k, v in row.items() if v]
+            if pairs:
+                lines.append("  " + ", ".join(pairs))
             continue
 
+        metric = str(row.get(metric_col, "")).strip()
+        if not metric or metric in ["", "–", "—", "•"]:
+            continue
+
+        # Format values
         values = []
         for col in value_cols:
             val = str(row.get(col, "")).strip()
-            if val:
-                values.append(f"{col}: {val}")
+            if val and val not in ["", "–", "—"]:
+                # Try to make column names more readable
+                col_name = col.strip()
+                if col_name.replace(".", "").isdigit():  # Column is a number (likely year/date)
+                    values.append(f"[{col_name}]: {val}")
+                else:
+                    values.append(f"{col_name}: {val}")
 
         if values:
-            lines.append(f"{metric} — {', '.join(values)}")
+            lines.append(f"  {metric} — {', '.join(values)}")
         else:
-            lines.append(f"• {metric}")
+            lines.append(f"  • {metric}")
 
-    if len(rows) > 50:
-        lines.append(f"... ({len(rows) - 50} more rows)")
+    if len(rows) > 20:
+        lines.append(f"  ... ({len(rows) - 20} more rows)")
 
     return "\n".join(lines)
 
@@ -353,27 +452,32 @@ def main(batch_size: int = 16, max_workers: int = 2) -> None:
 
 if __name__ == "__main__":
     settings = get_settings()
-    parser = argparse.ArgumentParser(description="Ingest documents (text + tables)")
-    parser.add_argument(
+    arg_parser = argparse.ArgumentParser(description="Ingest documents (text + tables)")
+    arg_parser.add_argument(
         "--batch-size",
         type=int,
         default=settings.pdf_batch_size,
         help=f"Documents per batch (default: {settings.pdf_batch_size})",
     )
-    parser.add_argument(
+    arg_parser.add_argument(
         "--workers",
         type=int,
         default=settings.pdf_max_workers,
         help=f"Parallel workers (default: {settings.pdf_max_workers})",
     )
-    parser.add_argument(
+    arg_parser.add_argument(
         "--reset",
         action="store_true",
         help="Reset all CHUNKS_BUILT documents to NEW status (forces reprocessing)",
     )
-    args = parser.parse_args()
+    arg_parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help="Reset all FAILED documents to NEW status (retry failed ingestions)",
+    )
+    args = arg_parser.parse_args()
 
-    # Handle reset mode
+    # Handle reset/retry modes
     if args.reset:
         logging.basicConfig(
             level=logging.INFO,
@@ -381,6 +485,13 @@ if __name__ == "__main__":
         )
         count = reset_all_to_new()
         LOGGER.info("Reset complete. Run 'make ingest' to reprocess %d documents.", count)
+    elif args.retry_failed:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        )
+        count = retry_failed_documents()
+        LOGGER.info("Retry setup complete. Run 'make ingest' to retry %d failed documents.", count)
     else:
         # Normal ingestion
         main(batch_size=args.batch_size, max_workers=args.workers)
