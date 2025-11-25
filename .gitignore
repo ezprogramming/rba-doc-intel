@@ -28,3 +28,8 @@ models/
 
 # Streamlit state
 .streamlit/
+
+# Markdown files (keep README.md only)
+*.md
+!README.md
+docs/

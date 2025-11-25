@@ -83,9 +83,9 @@ make ingest         # Retry processing failed docs
 - **Section hints:** The chunker scans the first 200 characters for headings (`3.2 Inflation`, `Chapter 4`, `Box A`) and stores them in `chunks.section_hint`. The Streamlit UI surfaces these hints inside the evidence expander so analysts immediately see where a quote came from.
 - **Hybrid similarity search:** Retrieval fuses cosine similarity (`pgvector` HNSW index) with Postgres full-text scores (`ts_rank_cd` on a persisted `tsvector` column). This is the "semantic + lexical" hybrid pattern Pinecone, Weaviate, and Cohere now recommend for enterprise search because identifiers/dates often rely on raw keyword matches.
 
-### Phase 6: RAG Quality Improvements
+### RAG Quality Features
 
-The platform now includes industry best practices for production RAG systems:
+The platform includes industry best practices for production RAG systems:
 
 **Chunking Enhancements:**
 - **Table-aware boundaries:** Prevents mid-table splits to preserve structured data integrity
@@ -135,13 +135,8 @@ The platform supports two methods for combining semantic and lexical search resu
 
 **Performance:**
 - Base retrieval: ~55-205ms
-- With Phase 6 (MMR + quality filtering): ~60-250ms (+5-45ms, +25-40% accuracy)
+- With MMR + quality filtering: ~60-250ms (+5-45ms, +25-40% accuracy)
 - With reranking enabled: +200-500ms (+15-25% additional accuracy)
-
-**Production Stability:**
-- **Fixed** critical numpy array ambiguity error in MMR implementation (retriever.py:342)
-- Changed `if chunk.embedding:` → `if chunk.embedding is not None:` for reliable numpy handling
-- All Phase 6 features verified working in end-to-end tests
 
 See `CLAUDE.md` sections 7.4, 8.3, and 8.4 for implementation details.
 
