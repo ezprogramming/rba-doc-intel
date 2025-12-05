@@ -28,19 +28,10 @@ services:
     volumes:
       - minio_data:/data
 
-  embedding:
-    build:
-      context: .
-      dockerfile: docker/embedding/Dockerfile
-    restart: unless-stopped
-    environment:
-      MODEL_ID: nomic-ai/nomic-embed-text-v1.5
-      EMBEDDING_BATCH_SIZE: 16
-      PYTORCH_ENABLE_MPS_FALLBACK: 1  # For M-series Macs
-    ports:
-      - "8080:8000"
-    volumes:
-      - embedding_data:/root/.cache/huggingface
+  # LiteLLM simplification: embedding service removed
+  # Both LLM and embeddings now use the Ollama container via LiteLLM
+  # Pull embedding model: docker compose exec llm ollama pull nomic-embed-text
+
   llm:
     image: ollama/ollama:latest
     environment:
@@ -73,8 +64,6 @@ services:
         condition: service_healthy
       minio:
         condition: service_started
-      embedding:
-        condition: service_started
       llm:
         condition: service_started
     volumes:
@@ -87,5 +76,4 @@ volumes:
   minio_data:
   uv_state:
   uv_cache:
-  embedding_data:
   ollama_data:

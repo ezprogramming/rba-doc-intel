@@ -22,8 +22,8 @@ $(eval $(EXTRA_ARGS):;@:)
 
 # Declare all phony targets (targets that don't create files)
 .PHONY: help bootstrap clean clean-all \
-	up up-detached up-models up-embedding down logs \
-	ui streamlit llm-pull \
+	up up-detached up-llm down logs \
+	ui streamlit llm-pull llm-pull-all \
 	crawl ingest ingest-reset refresh \
 	embeddings embeddings-reset \
 	test test-workflow verify-tables verify-tables-doc \
@@ -77,11 +77,8 @@ up-detached: ## Start all services in background
 	$(COMPOSE) up -d
 	@echo "Services started. Use 'make logs' to view logs."
 
-up-models: ## Start only embedding + LLM services
-	$(COMPOSE) up -d embedding llm
-
-up-embedding: ## Start only embedding service
-	$(COMPOSE) up -d embedding
+up-llm: ## Start only LLM service (handles both LLM and embeddings via LiteLLM)
+	$(COMPOSE) up -d llm
 
 down: ## Stop and remove all services
 	$(COMPOSE) down
@@ -101,6 +98,13 @@ streamlit: ## Launch Streamlit UI inside running container
 
 llm-pull: ## Pull Ollama model (default: qwen2.5:1.5b, override with MODEL=name)
 	$(COMPOSE) exec llm ollama pull $(MODEL)
+
+llm-pull-all: ## Pull both LLM and embedding models for Ollama
+	@echo "Pulling LLM model: $(MODEL)..."
+	$(COMPOSE) exec llm ollama pull $(MODEL)
+	@echo "Pulling embedding model: nomic-embed-text..."
+	$(COMPOSE) exec llm ollama pull nomic-embed-text
+	@echo "✓ All models ready"
 
 # =============================================================================
 # Data Pipeline

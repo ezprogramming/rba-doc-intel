@@ -31,6 +31,7 @@ dependencies = [
     "datasets>=2.16.0",  # Hugging Face datasets
     "accelerate>=0.25.0",  # Distributed training utilities
     # bitsandbytes>=0.42.0  # 4-bit quantization (NOT supported on MPS yet)
+    "litellm>=1.40.0",  # Unified LLM API (Ollama, OpenAI, Anthropic, etc.)
     #                       # Uncomment when training on NVIDIA GPU (cloud)
 ]
 

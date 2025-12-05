@@ -1,62 +1,87 @@
-"""Generic LLM client wrapper."""
+"""LLM client wrapper using LiteLLM for unified provider access.
+
+LiteLLM provides a unified API to call 100+ LLM providers:
+- Ollama: ollama/llama3, ollama/mistral, ollama/phi3
+- OpenAI: gpt-4, gpt-3.5-turbo
+- Anthropic: claude-3-sonnet-20240229, claude-3-opus-20240229
+- Azure: azure/gpt-4, azure/gpt-35-turbo
+- And many more...
+
+Configuration:
+- LLM_MODEL_NAME: Model name with provider prefix (e.g., "ollama/llama3")
+- LLM_API_BASE_URL: Base URL for the API (e.g., "http://llm:11434" for Ollama)
+- LLM_API_KEY: API key (optional for local providers like Ollama)
+"""
 
 from __future__ import annotations
 
-import json
+import logging
 from typing import Callable, List
 
-import requests
+import litellm
+from litellm import completion
 
 from app.config import get_settings
 
+logger = logging.getLogger(__name__)
+
+# Suppress verbose litellm logging
+litellm.set_verbose = False
+
 
 class LLMClient:
+    """Unified LLM client using LiteLLM."""
+
     def __init__(self):
         settings = get_settings()
-        self._base_url = settings.llm_api_base_url.rstrip("/")
         self._model_name = settings.llm_model_name
-        self._api_key = settings.llm_api_key
+        self._api_base = settings.llm_api_base_url.rstrip("/")
+        self._api_key = settings.llm_api_key or "not-needed"
 
-    def _build_payload(self, system_prompt: str, messages: List[dict], stream: bool) -> dict:
-        prompt_parts = [system_prompt]
+        # Configure LiteLLM for the provider
+        # Ollama needs special base URL handling
+        if self._model_name.startswith("ollama/"):
+            litellm.api_base = self._api_base
+
+    def _build_messages(self, system_prompt: str, messages: List[dict]) -> List[dict]:
+        """Convert to LiteLLM message format."""
+        result = [{"role": "system", "content": system_prompt}]
         for msg in messages:
-            role = msg.get("role", "")
-            content = msg.get("content", "")
-            prompt_parts.append(f"{role}: {content}")
-        full_prompt = "\n\n".join(prompt_parts)
-        return {
-            "model": self._model_name,
-            "prompt": full_prompt,
-            "stream": stream,
-            # Performance optimizations for CPU inference
-            "options": {
-                "num_predict": 2048,  # Max tokens to generate (allow detailed responses)
-                "num_ctx": 4096,  # Context window size (reduced from 32K default)
-                "temperature": 0.2,  # Low temperature for factual, focused RAG responses
-                "num_thread": 4,  # CPU threads (adjust based on available cores)
-                "top_p": 0.9,  # Nucleus sampling for quality
-            },
-        }
+            result.append(
+                {
+                    "role": msg.get("role", "user"),
+                    "content": msg.get("content", ""),
+                }
+            )
+        return result
 
     def complete(self, system_prompt: str, messages: List[dict]) -> str:
-        payload = self._build_payload(system_prompt, messages, stream=False)
-        headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-        response = requests.post(
-            f"{self._base_url}/api/generate",
-            json=payload,
-            headers=headers,
-            timeout=600,  # Increased to 10 minutes for CPU inference
-        )
-        if response.status_code == 404:
-            raise RuntimeError(
-                "LLM model not found on the Ollama server. "
-                "Run 'docker compose exec llm ollama pull {model}' and retry.".format(
-                    model=self._model_name
-                )
+        """Generate a completion (non-streaming).
+
+        Args:
+            system_prompt: System instructions for the LLM
+            messages: List of message dicts with 'role' and 'content'
+
+        Returns:
+            Generated text response
+        """
+        formatted_messages = self._build_messages(system_prompt, messages)
+
+        try:
+            response = completion(
+                model=self._model_name,
+                messages=formatted_messages,
+                api_base=self._api_base,
+                api_key=self._api_key,
+                timeout=600,  # 10 minutes for CPU inference
+                temperature=0.2,  # Low temperature for factual RAG responses
+                max_tokens=2048,
             )
-        response.raise_for_status()
-        data = response.json()
-        return data["response"]
+            return response.choices[0].message.content or ""
+
+        except Exception as e:
+            logger.error(f"LLM completion failed: {e}")
+            raise RuntimeError(f"LLM completion failed: {e}") from e
 
     def stream(
         self,
@@ -64,35 +89,40 @@ class LLMClient:
         messages: List[dict],
         on_token: Callable[[str], None] | None = None,
     ) -> str:
-        payload = self._build_payload(system_prompt, messages, stream=True)
-        headers = {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
+        """Generate a streaming completion.
+
+        Args:
+            system_prompt: System instructions for the LLM
+            messages: List of message dicts with 'role' and 'content'
+            on_token: Optional callback invoked for each token
+
+        Returns:
+            Complete generated text
+        """
+        formatted_messages = self._build_messages(system_prompt, messages)
         final_text = ""
-        with requests.post(
-            f"{self._base_url}/api/generate",
-            json=payload,
-            headers=headers,
-            stream=True,
-            timeout=600,  # Increased to 10 minutes for CPU inference
-        ) as response:
-            if response.status_code == 404:
-                raise RuntimeError(
-                    "LLM model not found on the Ollama server. "
-                    "Run 'docker compose exec llm ollama pull {model}' and retry.".format(
-                        model=self._model_name
-                    )
-                )
-            response.raise_for_status()
-            for raw_line in response.iter_lines():
-                if not raw_line:
-                    continue
-                data = json.loads(raw_line.decode("utf-8"))
-                if data.get("done"):
-                    break
-                token = data.get("response", "")
-                if token:
-                    final_text += token
+
+        try:
+            response = completion(
+                model=self._model_name,
+                messages=formatted_messages,
+                api_base=self._api_base,
+                api_key=self._api_key,
+                timeout=600,
+                temperature=0.2,
+                max_tokens=2048,
+                stream=True,
+            )
+
+            for chunk in response:
+                delta = chunk.choices[0].delta.content or ""
+                if delta:
+                    final_text += delta
                     if on_token:
-                        on_token(token)
-                if data.get("error"):
-                    raise RuntimeError(data["error"])
-        return final_text
+                        on_token(delta)
+
+            return final_text
+
+        except Exception as e:
+            logger.error(f"LLM streaming failed: {e}")
+            raise RuntimeError(f"LLM streaming failed: {e}") from e
